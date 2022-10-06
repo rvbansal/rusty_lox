@@ -27,7 +27,7 @@ impl<'src> Lexer<'src> {
             seen_eof: false,
         }
     }
-    
+
     /// Returns the next token or None when the string is finished.
     fn scan_token(&mut self) -> Option<LexerResult<SpannedToken>> {
         // Get rid of whitespace.
@@ -134,7 +134,7 @@ impl<'src> Lexer<'src> {
             None => return Err("Unterminated string.".to_owned()),
             Some((i, _)) => i,
         };
-        
+
         // Consume ending quote, '"'.
         self.cursor.take();
 

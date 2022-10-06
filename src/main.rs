@@ -1,9 +1,10 @@
+use crate::treewalk::token::SpannedToken;
+use crate::treewalk::Lexer;
+use crate::treewalk::Parser;
 use std::io::Write;
 use std::{env, fs, io, process};
-use crate::lexer::Lexer;
-use crate::lexer::token::SpannedToken;
 
-mod lexer;
+mod treewalk;
 
 type RunResult = Result<(), String>;
 
@@ -47,14 +48,17 @@ fn run_file(filename: &str) {
 
 fn run(source: &str) -> RunResult {
     let lexer = Lexer::new(source);
-    let (tokens, errors): (Vec<_>, Vec<_>) = lexer.iter().partition(|r| r.is_ok());
-    let tokens: Vec<SpannedToken> = tokens.into_iter().map(Result::unwrap).collect();
-    let _errors: Vec<String> = errors.into_iter().map(Result::unwrap_err).collect();
+    let tokens: Result<Vec<_>, _> = lexer.iter().collect();
 
-    for t in tokens.iter() {
-        println!("{:?}", t.token);
-    }
+    let mut parser = Parser::new(tokens?.into_iter());
 
+    let expr = match parser.parse_expression() {
+        Ok(expr) => expr,
+        Err(e) => return Err(format!("{:?}", e))
+    };
+
+    println!("{}", expr.ast_string());
+    
     Ok(())
 }
 
