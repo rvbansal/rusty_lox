@@ -10,9 +10,9 @@ fn is_identified_char(ch: char) -> bool {
     return ch.is_ascii_alphanumeric() || ch == '_';
 }
 
-pub struct Lexer<'a> {
-    source: &'a str,
-    cursor: Cursor<'a>,
+pub struct Lexer<'src> {
+    source: &'src str,
+    cursor: Cursor<'src>,
     seen_eof: bool,
 }
 
@@ -22,7 +22,7 @@ impl<'src> Lexer<'src> {
     /// Creates a lexer from source code.
     pub fn new(source: &'src str) -> Self {
         Lexer {
-            source: source,
+            source,
             cursor: Cursor::new(source),
             seen_eof: false,
         }

@@ -48,7 +48,7 @@ impl<'src> Cursor<'src> {
             self.position.column_no += 1;
         }
 
-        Some((byte_idx, ch))
+        return Some((byte_idx, ch));
     }
 
     /// Consumes the next character if it equals target char.

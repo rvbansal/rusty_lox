@@ -81,10 +81,10 @@ where
     }
 
     pub fn parse_expression(&mut self) -> ParserResult<ast::Expr> {
-        self.parse(Precedence::Lowest)
+        self.run_parse_algorithm(Precedence::Lowest)
     }
 
-    pub fn parse(&mut self, min_precedence: Precedence) -> ParserResult<ast::Expr> {
+    pub fn run_parse_algorithm(&mut self, min_precedence: Precedence) -> ParserResult<ast::Expr> {
         let (token, span) = self.take_token()?.split();
         let mut lhs = match token {
             // Literals
@@ -104,7 +104,7 @@ where
             // Prefix operator
             t => match PrefixOperator::from_token(&t) {
                 Some(op) => {
-                    let expr = self.parse(op.precedence())?;
+                    let expr = self.run_parse_algorithm(op.precedence())?;
                     ast::Expr::Prefix(op, Box::new(expr))
                 }
                 None => return Err(ParserError::ExpectedExprAt(span.start_pos, t)),
@@ -120,7 +120,7 @@ where
                 }
 
                 self.bump()?;
-                let rhs = self.parse(op.precedence())?;
+                let rhs = self.run_parse_algorithm(op.precedence())?;
                 lhs = ast::Expr::Infix(op, Box::new(lhs), Box::new(rhs));
                 continue;
             }

@@ -102,7 +102,6 @@ impl InfixOperator {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

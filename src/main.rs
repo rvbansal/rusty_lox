@@ -1,3 +1,5 @@
+use treewalk::Interpreter;
+
 use crate::treewalk::token::SpannedToken;
 use crate::treewalk::Lexer;
 use crate::treewalk::Parser;
@@ -22,6 +24,8 @@ fn main() {
 }
 
 fn run_prompt() {
+    let interpreter = Interpreter::new();
+
     loop {
         let mut input = String::new();
 
@@ -31,7 +35,7 @@ fn run_prompt() {
             .read_line(&mut input)
             .expect("Failed to read line.");
 
-        match run(&input) {
+        match run(&interpreter, &input) {
             Ok(_) => {}
             Err(e) => report_error(&e),
         }
@@ -40,13 +44,15 @@ fn run_prompt() {
 
 fn run_file(filename: &str) {
     let contents = fs::read_to_string(filename).expect("Failed to read file.");
-    match run(&contents) {
+    let interpreter = Interpreter::new();
+
+    match run(&interpreter, &contents) {
         Ok(_) => {}
         Err(e) => report_error(&e),
     }
 }
 
-fn run(source: &str) -> RunResult {
+fn run(interpreter: &Interpreter, source: &str) -> RunResult {
     let lexer = Lexer::new(source);
     let tokens: Result<Vec<_>, _> = lexer.iter().collect();
 
@@ -54,11 +60,18 @@ fn run(source: &str) -> RunResult {
 
     let expr = match parser.parse_expression() {
         Ok(expr) => expr,
-        Err(e) => return Err(format!("{:?}", e))
+        Err(e) => return Err(format!("{:?}", e)),
     };
 
-    println!("{}", expr.ast_string());
-    
+    // Print expression.
+    // println!("{}", expr.ast_string());
+
+    // Evaluate expression.
+    match interpreter.eval_expression(&expr) {
+        Ok(output) => println!("{:?}", output),
+        Err(e) => return Err(format!("{:?}", e))
+    }
+
     Ok(())
 }
 
