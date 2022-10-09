@@ -34,8 +34,28 @@ impl Interpreter {
                 let value = self.eval_expression(expr)?;
                 self.env.define(name.clone(), value);
             }
+            Stmt::Block(stmts) => self.eval_block(stmts)?
         }
 
+        Ok(())
+    }
+
+    pub fn eval_block(&mut self, stmts: &Vec<Stmt>) -> RuntimeResult<()> {
+        let prev_env = self.env.clone();
+        self.env = Environment::with_enclosing(&prev_env);
+
+        for stmt in stmts.iter() {
+            match self.eval_statement(stmt) {
+                Ok(_) => {}
+                Err(e) => {
+                    self.env = prev_env;
+                    return Err(e)
+                }
+            }
+        }
+
+        // Reset to enclosing environment.
+        self.env = prev_env;
         Ok(())
     }
 

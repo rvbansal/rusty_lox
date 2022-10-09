@@ -1,4 +1,4 @@
-use crate::treewalk::ast;
+use crate::treewalk::ast::{Expr, Stmt};
 use crate::treewalk::operator::{InfixOperator, Precedence, PrefixOperator};
 use crate::treewalk::span::CodePosition;
 use crate::treewalk::token::{SpannedToken, Token};
@@ -81,7 +81,8 @@ where
         }
     }
 
-    pub fn parse(mut self) -> Vec<ParserResult<ast::Stmt>> {
+    /// Parses program from the top of treating it as a set of statements.
+    pub fn parse(mut self) -> Vec<ParserResult<Stmt>> {
         let mut stmts = vec![];
 
         while !self.check(Token::EndOfFile).expect("QQ") {
@@ -92,7 +93,9 @@ where
         return stmts;
     }
 
-    fn parse_declaration(&mut self) -> ParserResult<ast::Stmt> {
+    /// Handle variable declations separately from non-declaring statements
+    /// since they may not be allowed everywhere non-declaring statements are allowed.
+    fn parse_declaration(&mut self) -> ParserResult<Stmt> {
         let (token, _) = self.peek_token()?.split_ref();
 
         match token {
@@ -102,32 +105,46 @@ where
                 let expr = if self.check_consume(Token::Equals)? {
                     self.parse_expression()?
                 } else {
-                    ast::Expr::NilLiteral
+                    Expr::NilLiteral
                 };
                 self.consume(Token::Semicolon)?;
 
-                Ok(ast::Stmt::VariableDecl(name, expr))
+                Ok(Stmt::VariableDecl(name, expr))
             }
             _ => self.parse_statement(),
         }
     }
 
-    fn parse_statement(&mut self) -> ParserResult<ast::Stmt> {
+    /// Parse print and expression statements.
+    fn parse_statement(&mut self) -> ParserResult<Stmt> {
         let (token, _) = self.peek_token()?.split_ref();
 
         match token {
             Token::Print => {
-                self.bump();
+                self.bump()?;
                 let expr = self.parse_expression()?;
                 self.check_consume(Token::Semicolon)?;
-                Ok(ast::Stmt::Print(expr))
+                Ok(Stmt::Print(expr))
             }
+            Token::LeftBrace => self.parse_block(),
             _ => {
                 let expr = self.parse_expression()?;
                 self.check_consume(Token::Semicolon)?;
-                Ok(ast::Stmt::Expression(expr))
+                Ok(Stmt::Expression(expr))
             }
         }
+    }
+
+    /// Parse a block of statements.
+    fn parse_block(&mut self) -> ParserResult<Stmt> {
+        let mut stmts = vec![];
+
+        self.consume(Token::LeftBrace)?;
+        while !self.check_consume(Token::RightBrace)? {
+            stmts.push(self.parse_declaration()?);
+        }
+
+        Ok(Stmt::Block(stmts))
     }
 
     fn parse_identifier(&mut self) -> ParserResult<String> {
@@ -138,20 +155,22 @@ where
         }
     }
 
-    pub fn parse_expression(&mut self) -> ParserResult<ast::Expr> {
-        self.run_parse_algorithm(Precedence::Lowest)
+    pub fn parse_expression(&mut self) -> ParserResult<Expr> {
+        self.run_pratt_parse_algo(Precedence::Lowest)
     }
 
-    pub fn run_parse_algorithm(&mut self, min_precedence: Precedence) -> ParserResult<ast::Expr> {
+    pub fn run_pratt_parse_algo(&mut self, min_precedence: Precedence) -> ParserResult<Expr> {
         let (token, span) = self.take_token()?.split();
+
+        // Start by parsing literals or prefixes.
         let mut lhs = match token {
             // Literals
-            Token::Number(n) => ast::Expr::NumberLiteral(n),
-            Token::True => ast::Expr::BooleanLiteral(true),
-            Token::False => ast::Expr::BooleanLiteral(false),
-            Token::String(s) => ast::Expr::StringLiteral(s),
-            Token::Nil => ast::Expr::NilLiteral,
-            Token::Identifier(s) => ast::Expr::Variable(s),
+            Token::Number(n) => Expr::NumberLiteral(n),
+            Token::True => Expr::BooleanLiteral(true),
+            Token::False => Expr::BooleanLiteral(false),
+            Token::String(s) => Expr::StringLiteral(s),
+            Token::Nil => Expr::NilLiteral,
+            Token::Identifier(s) => Expr::Variable(s),
 
             // Parentheses
             Token::LeftParen => {
@@ -163,43 +182,42 @@ where
             // Prefix operator
             t => match PrefixOperator::from_token(&t) {
                 Some(op) => {
-                    let expr = self.run_parse_algorithm(op.precedence())?;
-                    ast::Expr::Prefix(op, Box::new(expr))
+                    let expr = self.run_pratt_parse_algo(op.precedence())?;
+                    Expr::Prefix(op, Box::new(expr))
                 }
                 None => return Err(ParserError::ExpectedExprAt(span.start_pos, t)),
             },
         };
 
-        // Handle infix operators.
+        // Recursively handle any infixes with same or higher precedence.
         loop {
             let (token, span) = self.peek_token()?.split_ref();
             let span = span.to_owned();
 
+            // Standard infix
             if let Some(op) = InfixOperator::from_token(token) {
                 if op.precedence() <= min_precedence {
                     break;
                 }
-
                 self.bump()?;
-                let rhs = self.run_parse_algorithm(op.precedence())?;
-                lhs = ast::Expr::Infix(op, Box::new(lhs), Box::new(rhs));
+                let rhs = self.run_pratt_parse_algo(op.precedence())?;
+                lhs = Expr::Infix(op, Box::new(lhs), Box::new(rhs));
                 continue;
             }
 
+            // Assignment
             if let Token::Equals = token {
                 if Precedence::Assignment < min_precedence {
                     break;
                 }
-
                 self.bump()?;
-
+                // The lhs must he a variable identifier.
                 let name = match lhs {
-                    ast::Expr::Variable(name) => name,
+                    Expr::Variable(name) => name,
                     _ => return Err(ParserError::ExpectedIdentifierAt(span.start_pos)),
                 };
-
-                let rhs = self.run_parse_algorithm(Precedence::Assignment)?;
-                lhs = ast::Expr::Assignment(name, Box::new(rhs));
+                let rhs = self.run_pratt_parse_algo(Precedence::Assignment)?;
+                lhs = Expr::Assignment(name, Box::new(rhs));
                 continue;
             }
 
