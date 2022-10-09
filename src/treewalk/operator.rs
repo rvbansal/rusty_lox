@@ -4,6 +4,7 @@ use super::token::Token;
 pub enum Precedence {
     // Lowest precedence
     Lowest,
+    Assignment,
     Equality,
     Comparison,
     Addition,

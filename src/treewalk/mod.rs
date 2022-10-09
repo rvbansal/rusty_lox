@@ -1,5 +1,7 @@
 mod ast;
 mod cursor;
+mod environment;
+mod errors;
 mod interpreter;
 mod lexer;
 mod object;

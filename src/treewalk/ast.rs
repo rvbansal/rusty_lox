@@ -8,6 +8,15 @@ pub enum Expr {
     NilLiteral,
     Infix(InfixOperator, Box<Expr>, Box<Expr>),
     Prefix(PrefixOperator, Box<Expr>),
+    Variable(String),
+    Assignment(String, Box<Expr>),
+}
+
+#[derive(Debug, PartialEq)]
+pub enum Stmt {
+    Expression(Expr),
+    Print(Expr),
+    VariableDecl(String, Expr),
 }
 
 impl Expr {
@@ -24,6 +33,8 @@ impl Expr {
                 rhs.ast_string()
             ),
             Expr::Prefix(op, expr) => format!("({} {})", op.symbol(), expr.ast_string()),
+            Expr::Variable(s) => s.clone(),
+            Expr::Assignment(s, expr) => format!("(set {} {})", s, expr.ast_string()),
         }
     }
 }

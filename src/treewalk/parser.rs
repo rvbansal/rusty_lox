@@ -16,6 +16,7 @@ pub enum ParserError {
     BeyondEndOfFile,
     ExpectedTokenAt(Token, CodePosition, Token),
     ExpectedExprAt(CodePosition, Token),
+    ExpectedIdentifierAt(CodePosition),
 }
 
 pub type ParserResult<T> = Result<T, ParserError>;
@@ -80,6 +81,63 @@ where
         }
     }
 
+    pub fn parse(mut self) -> Vec<ParserResult<ast::Stmt>> {
+        let mut stmts = vec![];
+
+        while !self.check(Token::EndOfFile).expect("QQ") {
+            let stmt = self.parse_declaration();
+            stmts.push(stmt);
+        }
+
+        return stmts;
+    }
+
+    fn parse_declaration(&mut self) -> ParserResult<ast::Stmt> {
+        let (token, _) = self.peek_token()?.split_ref();
+
+        match token {
+            Token::Var => {
+                self.bump()?;
+                let name = self.parse_identifier()?;
+                let expr = if self.check_consume(Token::Equals)? {
+                    self.parse_expression()?
+                } else {
+                    ast::Expr::NilLiteral
+                };
+                self.consume(Token::Semicolon)?;
+
+                Ok(ast::Stmt::VariableDecl(name, expr))
+            }
+            _ => self.parse_statement(),
+        }
+    }
+
+    fn parse_statement(&mut self) -> ParserResult<ast::Stmt> {
+        let (token, _) = self.peek_token()?.split_ref();
+
+        match token {
+            Token::Print => {
+                self.bump();
+                let expr = self.parse_expression()?;
+                self.check_consume(Token::Semicolon)?;
+                Ok(ast::Stmt::Print(expr))
+            }
+            _ => {
+                let expr = self.parse_expression()?;
+                self.check_consume(Token::Semicolon)?;
+                Ok(ast::Stmt::Expression(expr))
+            }
+        }
+    }
+
+    fn parse_identifier(&mut self) -> ParserResult<String> {
+        let (token, span) = self.take_token()?.split();
+        match token {
+            Token::Identifier(name) => Ok(name.clone()),
+            _ => Err(ParserError::ExpectedIdentifierAt(span.start_pos)),
+        }
+    }
+
     pub fn parse_expression(&mut self) -> ParserResult<ast::Expr> {
         self.run_parse_algorithm(Precedence::Lowest)
     }
@@ -93,6 +151,7 @@ where
             Token::False => ast::Expr::BooleanLiteral(false),
             Token::String(s) => ast::Expr::StringLiteral(s),
             Token::Nil => ast::Expr::NilLiteral,
+            Token::Identifier(s) => ast::Expr::Variable(s),
 
             // Parentheses
             Token::LeftParen => {
@@ -113,7 +172,9 @@ where
 
         // Handle infix operators.
         loop {
-            let token = &self.peek_token()?.token;
+            let (token, span) = self.peek_token()?.split_ref();
+            let span = span.to_owned();
+
             if let Some(op) = InfixOperator::from_token(token) {
                 if op.precedence() <= min_precedence {
                     break;
@@ -122,6 +183,23 @@ where
                 self.bump()?;
                 let rhs = self.run_parse_algorithm(op.precedence())?;
                 lhs = ast::Expr::Infix(op, Box::new(lhs), Box::new(rhs));
+                continue;
+            }
+
+            if let Token::Equals = token {
+                if Precedence::Assignment < min_precedence {
+                    break;
+                }
+
+                self.bump()?;
+
+                let name = match lhs {
+                    ast::Expr::Variable(name) => name,
+                    _ => return Err(ParserError::ExpectedIdentifierAt(span.start_pos)),
+                };
+
+                let rhs = self.run_parse_algorithm(Precedence::Assignment)?;
+                lhs = ast::Expr::Assignment(name, Box::new(rhs));
                 continue;
             }
 

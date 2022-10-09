@@ -24,7 +24,7 @@ fn main() {
 }
 
 fn run_prompt() {
-    let interpreter = Interpreter::new();
+    let mut interpreter = Interpreter::new();
 
     loop {
         let mut input = String::new();
@@ -35,7 +35,7 @@ fn run_prompt() {
             .read_line(&mut input)
             .expect("Failed to read line.");
 
-        match run(&interpreter, &input) {
+        match run(&mut interpreter, &input) {
             Ok(_) => {}
             Err(e) => report_error(&e),
         }
@@ -44,35 +44,36 @@ fn run_prompt() {
 
 fn run_file(filename: &str) {
     let contents = fs::read_to_string(filename).expect("Failed to read file.");
-    let interpreter = Interpreter::new();
+    let mut interpreter = Interpreter::new();
 
-    match run(&interpreter, &contents) {
+    match run(&mut interpreter, &contents) {
         Ok(_) => {}
         Err(e) => report_error(&e),
     }
 }
 
-fn run(interpreter: &Interpreter, source: &str) -> RunResult {
+fn run(interpreter: &mut Interpreter, source: &str) -> RunResult {
     let lexer = Lexer::new(source);
     let tokens: Result<Vec<_>, _> = lexer.iter().collect();
 
-    let mut parser = Parser::new(tokens?.into_iter());
+    let tokens = match tokens {
+        Ok(tokens) => tokens,
+        Err(e) => return Err(e),
+    };
 
-    let expr = match parser.parse_expression() {
-        Ok(expr) => expr,
+    let parser = Parser::new(tokens.into_iter());
+    let statements: Result<Vec<_>, _> = parser.parse().into_iter().collect();
+
+    let statements = match statements {
+        Ok(statements) => statements,
         Err(e) => return Err(format!("{:?}", e)),
     };
 
-    // Print expression.
-    // println!("{}", expr.ast_string());
-
     // Evaluate expression.
-    match interpreter.eval_expression(&expr) {
-        Ok(output) => println!("{:?}", output),
-        Err(e) => return Err(format!("{:?}", e))
+    match interpreter.eval_statements(statements) {
+        Ok(_) => Ok(()),
+        Err(e) => Err(format!("{:?}", e)),
     }
-
-    Ok(())
 }
 
 fn report_error(error_message: &str) {

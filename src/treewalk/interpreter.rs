@@ -1,23 +1,45 @@
-use super::ast::Expr;
+use super::ast::{Expr, Stmt};
+use super::environment::Environment;
+use super::errors::{InterpreterError, RuntimeResult};
 use super::object::Object;
 use super::operator::{InfixOperator, PrefixOperator};
 
-pub struct Interpreter {}
-
-#[derive(Debug, PartialEq)]
-pub enum InterpreterError {
-    IllegalInfixOperation(InfixOperator, Object, Object),
-    IllegalPrefixOperation(PrefixOperator, Object),
+pub struct Interpreter {
+    env: Environment,
 }
-
-pub type RuntimeResult<T> = Result<T, InterpreterError>;
 
 impl Interpreter {
     pub fn new() -> Self {
-        Interpreter {}
+        Interpreter {
+            env: Environment::new(),
+        }
     }
 
-    pub fn eval_expression(&self, expr: &Expr) -> RuntimeResult<Object> {
+    pub fn eval_statements(&mut self, stmts: Vec<Stmt>) -> RuntimeResult<()> {
+        for stmt in stmts.iter() {
+            self.eval_statement(stmt)?;
+        }
+        Ok(())
+    }
+
+    fn eval_statement(&mut self, stmt: &Stmt) -> RuntimeResult<()> {
+        match stmt {
+            Stmt::Expression(expr) => {
+                self.eval_expression(expr)?;
+            }
+            Stmt::Print(expr) => {
+                println!("[out] {:?}", self.eval_expression(expr)?);
+            }
+            Stmt::VariableDecl(name, expr) => {
+                let value = self.eval_expression(expr)?;
+                self.env.define(name.clone(), value);
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn eval_expression(&mut self, expr: &Expr) -> RuntimeResult<Object> {
         match expr {
             Expr::NumberLiteral(n) => Ok(Object::Number(*n as f64)),
             Expr::BooleanLiteral(b) => Ok(Object::Boolean(*b)),
@@ -25,11 +47,17 @@ impl Interpreter {
             Expr::NilLiteral => Ok(Object::Nil),
             Expr::Infix(op, lhs, rhs) => self.eval_infix_operator(op, lhs, rhs),
             Expr::Prefix(op, expr) => self.eval_prefix_operator(op, expr),
+            Expr::Variable(name) => self.env.get(name),
+            Expr::Assignment(name, expr) => {
+                let value = self.eval_expression(expr)?;
+                self.env.set(name.clone(), value.clone())?;
+                Ok(value)
+            }
         }
     }
 
     pub fn eval_infix_operator(
-        &self,
+        &mut self,
         op: &InfixOperator,
         lhs: &Expr,
         rhs: &Expr,
@@ -59,7 +87,11 @@ impl Interpreter {
         }
     }
 
-    pub fn eval_prefix_operator(&self, op: &PrefixOperator, expr: &Expr) -> RuntimeResult<Object> {
+    pub fn eval_prefix_operator(
+        &mut self,
+        op: &PrefixOperator,
+        expr: &Expr,
+    ) -> RuntimeResult<Object> {
         let value = self.eval_expression(expr)?;
 
         match op {
@@ -87,51 +119,50 @@ where
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn test_eval_func(expr: &Expr) -> RuntimeResult<Object> {
-        let interpreter = Interpreter::new();
+        let mut interpreter = Interpreter::new();
         return interpreter.eval_expression(expr);
     }
 
     #[test]
     fn test_interpreter_infix_expr() {
         let expr1 = Expr::Infix(
-            InfixOperator::Add, 
-            Box::new(Expr::NumberLiteral(1.0)), 
-            Box::new(Expr::NumberLiteral(2.0))
+            InfixOperator::Add,
+            Box::new(Expr::NumberLiteral(1.0)),
+            Box::new(Expr::NumberLiteral(2.0)),
         );
 
         let expr2 = Expr::Infix(
-            InfixOperator::Add, 
-            Box::new(Expr::StringLiteral("test1".to_string())), 
-            Box::new(Expr::StringLiteral("test2".to_string()))
+            InfixOperator::Add,
+            Box::new(Expr::StringLiteral("test1".to_string())),
+            Box::new(Expr::StringLiteral("test2".to_string())),
         );
 
         let expr3 = Expr::Infix(
-            InfixOperator::LessEq, 
-            Box::new(Expr::NumberLiteral(1.0)), 
-            Box::new(Expr::NumberLiteral(0.5))
+            InfixOperator::LessEq,
+            Box::new(Expr::NumberLiteral(1.0)),
+            Box::new(Expr::NumberLiteral(0.5)),
         );
 
         assert_eq!(test_eval_func(&expr1), Ok(Object::Number(3.0)));
-        assert_eq!(test_eval_func(&expr2), Ok(Object::String("test1test2".to_string())));
+        assert_eq!(
+            test_eval_func(&expr2),
+            Ok(Object::String("test1test2".to_string()))
+        );
         assert_eq!(test_eval_func(&expr3), Ok(Object::Boolean(false)));
     }
 
     #[test]
     fn test_interpreter_prefix_expr() {
-        let expr1 = Expr::Prefix(
-            PrefixOperator::Negate, 
-            Box::new(Expr::NumberLiteral(2.0))
-        );
+        let expr1 = Expr::Prefix(PrefixOperator::Negate, Box::new(Expr::NumberLiteral(2.0)));
 
         let expr2 = Expr::Prefix(
-            PrefixOperator::LogicalNot, 
-            Box::new(Expr::BooleanLiteral(false))
+            PrefixOperator::LogicalNot,
+            Box::new(Expr::BooleanLiteral(false)),
         );
 
         assert_eq!(test_eval_func(&expr1), Ok(Object::Number(-2.0)));
