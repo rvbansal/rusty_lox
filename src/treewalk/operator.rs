@@ -5,11 +5,19 @@ pub enum Precedence {
     // Lowest precedence
     Lowest,
     Assignment,
+    LogicalOr,
+    LogicalAnd,
     Equality,
     Comparison,
     Addition,
     Multiplication,
     Unary, // Highest precedence
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum LogicalOperator {
+    And,
+    Or,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -31,6 +39,33 @@ pub enum InfixOperator {
     LessThan,
     LessEq,
 }
+
+impl LogicalOperator {
+    pub fn from_token(token: &Token) -> Option<LogicalOperator> {
+        let op = match token {
+            Token::And => LogicalOperator::And,
+            Token::Or => LogicalOperator::Or,
+            _ => return None,
+        };
+
+        return Some(op);
+    }
+
+    pub fn precedence(&self) -> Precedence {
+        match self {
+            LogicalOperator::And => Precedence::LogicalAnd,
+            LogicalOperator::Or => Precedence::LogicalOr,
+        }
+    }
+
+    pub fn symbol(&self) -> &str {
+        match self {
+            LogicalOperator::And => "and",
+            LogicalOperator::Or => "or",
+        }
+    }
+}
+
 
 impl PrefixOperator {
     pub fn from_token(token: &Token) -> Option<PrefixOperator> {
