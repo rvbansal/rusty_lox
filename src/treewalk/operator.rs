@@ -11,7 +11,8 @@ pub enum Precedence {
     Comparison,
     Addition,
     Multiplication,
-    Unary, // Highest precedence
+    Unary,
+    Call, // Highest precedence
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -65,7 +66,6 @@ impl LogicalOperator {
         }
     }
 }
-
 
 impl PrefixOperator {
     pub fn from_token(token: &Token) -> Option<PrefixOperator> {

@@ -1,0 +1,4 @@
+var y = clock();
+print y;
+var z = clock();
+print z;

@@ -6,25 +6,24 @@ use std::collections::HashMap;
 use std::hash::Hash;
 use std::rc::Rc;
 
-
 #[derive(Clone)]
 pub struct Environment {
-    env_ptr: Rc<RefCell<EnvironmentData>>
+    env_ptr: Rc<RefCell<EnvironmentData>>,
 }
 
 struct EnvironmentData {
     values: HashMap<String, Object>,
-    enclosing: Option<Environment>
+    enclosing: Option<Environment>,
 }
 
 impl Environment {
     pub fn new() -> Self {
         let env_data = EnvironmentData {
             values: HashMap::new(),
-            enclosing: None
+            enclosing: None,
         };
         Environment {
-            env_ptr: Rc::new(RefCell::new(env_data))
+            env_ptr: Rc::new(RefCell::new(env_data)),
         }
     }
 
@@ -32,10 +31,10 @@ impl Environment {
     pub fn with_enclosing(env: &Environment) -> Self {
         let env_data = EnvironmentData {
             values: HashMap::new(),
-            enclosing: Some(env.clone())
+            enclosing: Some(env.clone()),
         };
         Environment {
-            env_ptr: Rc::new(RefCell::new(env_data))
+            env_ptr: Rc::new(RefCell::new(env_data)),
         }
     }
 
@@ -55,20 +54,20 @@ impl Environment {
 
         match env_data.enclosing {
             Some(ref mut env) => env.set(name, value),
-            None => Err(InterpreterError::UndefinedVariable(name))
+            None => Err(InterpreterError::UndefinedVariable(name)),
         }
     }
 
     /// Get variable value.
     pub fn get(&self, name: &str) -> RuntimeResult<Object> {
         let env_data = self.env_ptr.borrow();
-        
+
         match env_data.values.get(name) {
             Some(obj) => Ok(obj.clone()),
             None => match env_data.enclosing {
                 Some(ref env) => env.get(name),
                 None => Err(InterpreterError::UndefinedVariable(name.to_owned())),
-            }
+            },
         }
     }
 }

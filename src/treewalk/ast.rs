@@ -1,4 +1,4 @@
-use super::operator::{InfixOperator, PrefixOperator, LogicalOperator};
+use super::operator::{InfixOperator, LogicalOperator, PrefixOperator};
 
 #[derive(Debug, PartialEq)]
 pub enum Expr {
@@ -11,6 +11,7 @@ pub enum Expr {
     Logical(LogicalOperator, Box<Expr>, Box<Expr>),
     Variable(String),
     Assignment(String, Box<Expr>),
+    Call(Box<Expr>, Vec<Expr>),
 }
 
 #[derive(Debug, PartialEq)]
@@ -20,7 +21,7 @@ pub enum Stmt {
     VariableDecl(String, Expr),
     Block(Vec<Stmt>),
     IfElse(Expr, Box<Stmt>, Box<Option<Stmt>>),
-    While(Expr, Box<Stmt>)
+    While(Expr, Box<Stmt>),
 }
 
 impl Expr {
@@ -45,6 +46,10 @@ impl Expr {
             ),
             Expr::Variable(s) => s.clone(),
             Expr::Assignment(s, expr) => format!("(set {} {})", s, expr.ast_string()),
+            Expr::Call(callee, args) => {
+                let exprs: Vec<_> = args.iter().map(|a| a.ast_string()).collect();
+                format!("(call {} {})", callee.ast_string(), exprs.join(" "))
+            }
         }
     }
 }

@@ -1,9 +1,11 @@
 mod ast;
+pub mod constants;
 mod cursor;
 mod environment;
 mod errors;
 mod interpreter;
 mod lexer;
+mod native_funcs;
 mod object;
 mod operator;
 mod parser;

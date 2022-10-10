@@ -62,9 +62,9 @@ fn run(interpreter: &mut Interpreter, source: &str) -> RunResult {
     };
 
     let parser = Parser::new(tokens.into_iter());
-    let statements: Result<Vec<_>, _> = parser.parse().into_iter().collect();
+    let statements: Vec<_> = parser.parse();
 
-    let statements = match statements {
+    let statements: Vec<_> = match statements.into_iter().collect() {
         Ok(statements) => statements,
         Err(e) => return Err(format!("{:?}", e)),
     };

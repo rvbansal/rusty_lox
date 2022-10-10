@@ -1,8 +1,8 @@
 use crate::treewalk::ast::{Expr, Stmt};
-use crate::treewalk::operator::{InfixOperator, Precedence, PrefixOperator, LogicalOperator};
+use crate::treewalk::constants::MAX_FUNC_ARGS;
+use crate::treewalk::operator::{InfixOperator, LogicalOperator, Precedence, PrefixOperator};
 use crate::treewalk::span::CodePosition;
 use crate::treewalk::token::{SpannedToken, Token};
-use std::array::IntoIter;
 use std::iter::Peekable;
 
 pub struct Parser<T>
@@ -17,6 +17,7 @@ pub enum ParserError {
     ExpectedTokenAt(Token, CodePosition, Token),
     ExpectedExprAt(CodePosition, Token),
     ExpectedIdentifierAt(CodePosition),
+    TooManyArgsAt(CodePosition),
 }
 
 pub type ParserResult<T> = Result<T, ParserError>;
@@ -35,7 +36,7 @@ where
     fn peek_token(&mut self) -> SpannedToken {
         match self.tokens.peek() {
             Some(t) => t.clone(),
-            None => panic!("Went beyond EOF.")
+            None => panic!("Went beyond EOF."),
         }
     }
 
@@ -43,7 +44,7 @@ where
     fn take_token(&mut self) -> SpannedToken {
         match self.tokens.next() {
             Some(t) => t.clone(),
-            None => panic!("Went beyond EOF.")
+            None => panic!("Went beyond EOF."),
         }
     }
 
@@ -51,7 +52,7 @@ where
     fn bump(&mut self) {
         match self.take_token().token {
             Token::EndOfFile => panic!("Went beyond EOF."),
-            _ => ()
+            _ => (),
         }
     }
 
@@ -155,7 +156,7 @@ where
         Ok(Stmt::IfElse(
             condition,
             Box::new(if_triggered_body),
-            Box::new(else_triggered_body)
+            Box::new(else_triggered_body),
         ))
     }
 
@@ -238,6 +239,29 @@ where
         }
     }
 
+    fn parse_fn_args(&mut self) -> ParserResult<Vec<Expr>> {
+        self.consume(Token::LeftParen)?;
+        let mut args = vec![];
+
+        if self.check_consume(Token::RightParen) {
+            return Ok(args);
+        }
+
+        args.push(self.parse_expression()?);
+
+        while !self.check_consume(Token::RightParen) {
+            self.consume(Token::Comma)?;
+            args.push(self.parse_expression()?);
+        }
+
+        if args.len() >= MAX_FUNC_ARGS {
+            let span = self.peek_token().span;
+            return Err(ParserError::TooManyArgsAt(span.start_pos));
+        }
+
+        Ok(args)
+    }
+
     pub fn parse_expression(&mut self) -> ParserResult<Expr> {
         self.run_pratt_parse_algo(Precedence::Lowest)
     }
@@ -314,6 +338,16 @@ where
                 let rhs = self.run_pratt_parse_algo(Precedence::Assignment)?;
                 lhs = Expr::Assignment(name, Box::new(rhs));
                 continue;
+            }
+
+            // Function Call
+            if let Token::LeftParen = token {
+                if Precedence::Call < min_precedence {
+                    break;
+                }
+
+                let args = self.parse_fn_args()?;
+                lhs = Expr::Call(Box::new(lhs), args);
             }
 
             break;

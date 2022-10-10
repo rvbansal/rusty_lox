@@ -1,8 +1,10 @@
 use super::ast::{Expr, Stmt};
 use super::environment::Environment;
 use super::errors::{InterpreterError, RuntimeResult};
+use super::native_funcs::{self, get_native_funcs};
 use super::object::Object;
-use super::operator::{InfixOperator, PrefixOperator, LogicalOperator};
+use super::operator::{InfixOperator, LogicalOperator, PrefixOperator};
+use std::rc::Rc;
 
 pub struct Interpreter {
     env: Environment,
@@ -10,9 +12,14 @@ pub struct Interpreter {
 
 impl Interpreter {
     pub fn new() -> Self {
-        Interpreter {
-            env: Environment::new(),
+        let mut env = Environment::new();
+        for native_func in get_native_funcs().into_iter() {
+            let name = native_func.name.clone();
+            let func = Object::NativeFunc(Rc::new(native_func));
+            env.define(name, func);
         }
+
+        Interpreter { env }
     }
 
     pub fn eval_statements(&mut self, stmts: Vec<Stmt>) -> RuntimeResult<()> {
@@ -41,15 +48,15 @@ impl Interpreter {
                 self.env.define(name.clone(), value);
                 Ok(())
             }
-            Stmt::Block(stmts) => self.eval_block(stmts)
+            Stmt::Block(stmts) => self.eval_block(stmts),
         }
     }
 
     pub fn eval_if_else(
-        &mut self, 
+        &mut self,
         if_condition: &Expr,
         if_body: &Stmt,
-        else_body: &Option<Stmt>
+        else_body: &Option<Stmt>,
     ) -> RuntimeResult<()> {
         if self.eval_expression(if_condition)?.is_truthy() {
             return self.eval_statement(if_body);
@@ -62,11 +69,7 @@ impl Interpreter {
         Ok(())
     }
 
-    pub fn eval_while(
-        &mut self, 
-        condition: &Expr,
-        body: &Stmt,
-    ) -> RuntimeResult<()> {
+    pub fn eval_while(&mut self, condition: &Expr, body: &Stmt) -> RuntimeResult<()> {
         while self.eval_expression(condition)?.is_truthy() {
             self.eval_statement(body)?;
         }
@@ -83,7 +86,7 @@ impl Interpreter {
                 Ok(_) => {}
                 Err(e) => {
                     self.env = prev_env;
-                    return Err(e)
+                    return Err(e);
                 }
             }
         }
@@ -108,6 +111,7 @@ impl Interpreter {
                 self.env.set(name.clone(), value.clone())?;
                 Ok(value)
             }
+            Expr::Call(callee, args) => self.eval_func_call(callee, args),
         }
     }
 
@@ -123,7 +127,7 @@ impl Interpreter {
         match op {
             LogicalOperator::And if !lhs.is_truthy() => Ok(lhs),
             LogicalOperator::Or if lhs.is_truthy() => Ok(lhs),
-            _ => self.eval_expression(rhs)
+            _ => self.eval_expression(rhs),
         }
     }
 
@@ -172,6 +176,17 @@ impl Interpreter {
             },
             PrefixOperator::LogicalNot => Ok(Object::Boolean(!value.is_truthy())),
         }
+    }
+
+    pub fn eval_func_call(&mut self, callee: &Expr, raw_args: &Vec<Expr>) -> RuntimeResult<Object> {
+        let callee = self.eval_expression(callee)?;
+
+        let mut args = Vec::with_capacity(raw_args.len());
+        for raw_arg in raw_args.iter() {
+            args.push(self.eval_expression(raw_arg)?);
+        }
+
+        callee.execute(args, self)
     }
 }
 

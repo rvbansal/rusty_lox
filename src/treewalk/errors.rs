@@ -6,6 +6,8 @@ pub enum InterpreterError {
     IllegalInfixOperation(InfixOperator, Object, Object),
     IllegalPrefixOperation(PrefixOperator, Object),
     UndefinedVariable(String),
+    WrongArity(usize, usize),
+    NotCallable(Object),
 }
 
 pub type RuntimeResult<T> = Result<T, InterpreterError>;
