@@ -1,9 +1,7 @@
 use super::errors::{InterpreterError, RuntimeResult};
 use super::object::Object;
 use std::cell::RefCell;
-use std::collections::hash_map::Entry;
 use std::collections::HashMap;
-use std::hash::Hash;
 use std::rc::Rc;
 
 #[derive(Clone)]
@@ -39,35 +37,49 @@ impl Environment {
     }
 
     /// Add or replace current definition.
-    pub fn define(&mut self, name: String, value: Object) {
+    pub fn define(&self, name: String, value: Object) {
         self.env_ptr.borrow_mut().values.insert(name, value);
     }
 
-    /// Set current variable.
-    pub fn set(&mut self, name: String, value: Object) -> RuntimeResult<()> {
-        let mut env_data = self.env_ptr.borrow_mut();
-
-        if let Some(old_value_ref) = env_data.values.get_mut(&name) {
-            *old_value_ref = value;
-            return Ok(());
-        }
-
-        match env_data.enclosing {
-            Some(ref mut env) => env.set(name, value),
-            None => Err(InterpreterError::UndefinedVariable(name)),
+    /// Get current variable.
+    pub fn get(&self, name: &str) -> RuntimeResult<Object> {
+        match self.env_ptr.borrow_mut().values.get(name) {
+            Some(obj) => Ok(obj.clone()),
+            None => Err(InterpreterError::UndefinedVariable(name.to_owned())),
         }
     }
 
-    /// Get variable value.
-    pub fn get(&self, name: &str) -> RuntimeResult<Object> {
-        let env_data = self.env_ptr.borrow();
-
-        match env_data.values.get(name) {
-            Some(obj) => Ok(obj.clone()),
-            None => match env_data.enclosing {
-                Some(ref env) => env.get(name),
-                None => Err(InterpreterError::UndefinedVariable(name.to_owned())),
-            },
+    /// Set current variable.
+    pub fn set(&self, name: &str, value: Object) -> RuntimeResult<()> {
+        match self.env_ptr.borrow_mut().values.get_mut(name) {
+            Some(slot) => {
+                *slot = value;
+                Ok(())
+            }
+            None => Err(InterpreterError::UndefinedVariable(name.to_owned())),
         }
+    }
+
+    fn ancestor(&self, env_hops: usize) -> Environment {
+        if env_hops == 0 {
+            self.clone()
+        } else {
+            self.env_ptr
+                .borrow()
+                .enclosing
+                .as_ref()
+                .expect("Went past global env.")
+                .ancestor(env_hops - 1)
+        }
+    }
+
+    /// Set variable value.
+    pub fn set_at(&self, env_hops: usize, name: &str, value: Object) -> RuntimeResult<()> {
+        self.ancestor(env_hops).set(name, value)
+    }
+
+    /// Get variable value.
+    pub fn get_at(&self, env_hops: usize, name: &str) -> RuntimeResult<Object> {
+        self.ancestor(env_hops).get(name)
     }
 }

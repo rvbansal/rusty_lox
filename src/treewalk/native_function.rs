@@ -15,11 +15,10 @@ pub struct NativeFnData {
 #[derive(Clone)]
 pub struct NativeFn(Rc<NativeFnData>);
 
-
 impl NativeFn {
-    fn new(name: &str, func: FnType, arity: usize) -> Self{
+    fn new(name: &str, func: FnType, arity: usize) -> Self {
         let name = name.to_owned();
-        let data = NativeFnData{func, arity, name};
+        let data = NativeFnData { func, arity, name };
         NativeFn(Rc::new(data))
     }
 

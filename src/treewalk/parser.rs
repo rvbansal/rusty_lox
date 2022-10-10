@@ -1,12 +1,10 @@
-use crate::treewalk::ast::{Expr, Stmt};
-use crate::treewalk::constants::MAX_FUNC_ARGS;
-use crate::treewalk::operator::{InfixOperator, LogicalOperator, Precedence, PrefixOperator};
-use crate::treewalk::span::CodePosition;
-use crate::treewalk::token::{SpannedToken, Token};
-use std::iter::Peekable;
+use super::ast::{Expr, Stmt, VariableInfo};
+use super::constants::MAX_FUNC_ARGS;
+use super::operator::{InfixOperator, LogicalOperator, Precedence, PrefixOperator};
+use super::span::CodePosition;
+use super::token::{SpannedToken, Token};
 
-use super::Interpreter;
-use super::errors::InterpreterError;
+use std::iter::Peekable;
 
 pub struct Parser<T>
 where
@@ -325,8 +323,7 @@ where
             Token::False => Expr::BooleanLiteral(false),
             Token::String(s) => Expr::StringLiteral(s),
             Token::Nil => Expr::NilLiteral,
-            Token::Identifier(s) => Expr::Variable(s),
-
+            Token::Identifier(name) => Expr::Variable(VariableInfo::new(name)),
             // Parentheses
             Token::LeftParen => {
                 let expr = self.parse_expression()?;
@@ -379,12 +376,12 @@ where
                 }
                 self.bump();
                 // The lhs must he a variable identifier.
-                let name = match lhs {
-                    Expr::Variable(name) => name,
+                let var_info = match lhs {
+                    Expr::Variable(var_info) => VariableInfo::new(var_info.name.clone()),
                     _ => return Err(ParserError::ExpectedIdentifierAt(span.start_pos)),
                 };
                 let rhs = self.run_pratt_parse_algo(Precedence::Assignment)?;
-                lhs = Expr::Assignment(name, Box::new(rhs));
+                lhs = Expr::Assignment(var_info, Box::new(rhs));
                 continue;
             }
 

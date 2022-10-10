@@ -1,8 +1,7 @@
-use treewalk::Interpreter;
-
-use crate::treewalk::token::SpannedToken;
+use crate::treewalk::Interpreter;
 use crate::treewalk::Lexer;
 use crate::treewalk::Parser;
+use crate::treewalk::Resolver;
 use std::io::Write;
 use std::{env, fs, io, process};
 
@@ -53,23 +52,32 @@ fn run_file(filename: &str) {
 }
 
 fn run(interpreter: &mut Interpreter, source: &str) -> RunResult {
+    // Run lexer.
     let lexer = Lexer::new(source);
     let tokens: Result<Vec<_>, _> = lexer.iter().collect();
-
     let tokens = match tokens {
         Ok(tokens) => tokens,
         Err(e) => return Err(e),
     };
 
+    // Run parser.
     let parser = Parser::new(tokens.into_iter());
     let statements: Vec<_> = parser.parse();
-
-    let statements: Vec<_> = match statements.into_iter().collect() {
+    let mut statements: Vec<_> = match statements.into_iter().collect() {
         Ok(statements) => statements,
         Err(e) => return Err(format!("{:?}", e)),
     };
 
-    // Evaluate expression.
+    // Run resolver.
+    let mut resolver = Resolver::new();
+    for stmt in statements.iter_mut() {
+        match resolver.resolve_root(stmt) {
+            Ok(_) => (),
+            Err(e) => return Err(format!("{:?}", e)),
+        }
+    }
+
+    // Run interpreter.
     match interpreter.eval_statements(statements) {
         Ok(_) => Ok(()),
         Err(e) => Err(format!("{:?}", e)),

@@ -1,20 +1,19 @@
 use super::ast::{Expr, Stmt};
 use super::environment::Environment;
 use super::errors::{InterpreterError, RuntimeResult};
+use super::function::LoxFn;
 use super::native_function::get_native_funcs;
 use super::object::Object;
-use super::function::LoxFn;
 use super::operator::{InfixOperator, LogicalOperator, PrefixOperator};
-use std::rc::Rc;
 
 pub struct Interpreter {
     pub env: Environment,
-    pub globals: Environment
+    pub globals: Environment,
 }
 
 impl Interpreter {
     pub fn new() -> Self {
-        let mut env = Environment::new();
+        let env = Environment::new();
         for native_func in get_native_funcs().into_iter() {
             let name = native_func.name().to_owned();
             let func = Object::NativeFunc(native_func);
@@ -60,16 +59,14 @@ impl Interpreter {
             Stmt::Block(stmts) => self.eval_block(stmts),
             Stmt::FuncDecl(name, params, body) => {
                 let func = LoxFn::new(
-                    name.clone(), 
-                    params.clone(), 
+                    name.clone(),
+                    params.clone(),
                     *body.clone(),
-                    self.env.clone()
+                    self.env.clone(),
                 );
-                self.env.define(
-                    name.clone(), Object::LoxFunc(func)
-                );
+                self.env.define(name.clone(), Object::LoxFunc(func));
                 Ok(())
-            },
+            }
             Stmt::Return(expr) => {
                 let value = self.eval_expression(expr)?;
                 Err(InterpreterError::Return(value))
@@ -130,10 +127,16 @@ impl Interpreter {
             Expr::Infix(op, lhs, rhs) => self.eval_infix_operator(op, lhs, rhs),
             Expr::Prefix(op, expr) => self.eval_prefix_operator(op, expr),
             Expr::Logical(op, lhs, rhs) => self.eval_logical_operator(op, lhs, rhs),
-            Expr::Variable(name) => self.env.get(name),
-            Expr::Assignment(name, expr) => {
+            Expr::Variable(var_info) => match var_info.env_hops {
+                Some(env_hops) => self.env.get_at(env_hops, &var_info.name),
+                None => self.globals.get(&var_info.name),
+            },
+            Expr::Assignment(var_info, expr) => {
                 let value = self.eval_expression(expr)?;
-                self.env.set(name.clone(), value.clone())?;
+                match var_info.env_hops {
+                    Some(env_hops) => self.env.set_at(env_hops, &var_info.name, value.clone())?,
+                    None => self.globals.set(&var_info.name, value.clone())?,
+                }
                 Ok(value)
             }
             Expr::Call(callee, args) => self.eval_func_call(callee, args),

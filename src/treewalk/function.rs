@@ -1,5 +1,5 @@
-use super::environment::Environment;
 use super::ast::Stmt;
+use super::environment::Environment;
 use super::errors::{InterpreterError, RuntimeResult};
 use super::interpreter::Interpreter;
 use super::object::Object;
@@ -11,12 +11,11 @@ pub struct LoxFnData {
     name: String,
     params: Vec<String>,
     body: Stmt,
-    closure: Environment
+    closure: Environment,
 }
 
 #[derive(Clone)]
 pub struct LoxFn(Rc<LoxFnData>);
-
 
 impl LoxFn {
     pub fn new(name: String, params: Vec<String>, body: Stmt, closure: Environment) -> Self {
@@ -24,7 +23,7 @@ impl LoxFn {
             name,
             params,
             body,
-            closure
+            closure,
         };
         LoxFn(Rc::new(data))
     }
@@ -32,10 +31,13 @@ impl LoxFn {
     pub fn execute(
         &self,
         args: Vec<Object>,
-        interpreter: &mut Interpreter
+        interpreter: &mut Interpreter,
     ) -> RuntimeResult<Object> {
         if args.len() != self.0.params.len() {
-            return Err(InterpreterError::WrongArity(self.0.params.len(), args.len()));
+            return Err(InterpreterError::WrongArity(
+                self.0.params.len(),
+                args.len(),
+            ));
         }
 
         // Create a new environment pointing to surrounding closure
@@ -49,7 +51,7 @@ impl LoxFn {
         let result = match interpreter.eval_statement(&self.0.body) {
             Ok(_) => Ok(Object::Nil),
             Err(InterpreterError::Return(object)) => Ok(object),
-            Err(e) => Err(e)
+            Err(e) => Err(e),
         };
 
         interpreter.swap_env(prev_env);
@@ -70,4 +72,3 @@ impl PartialEq<LoxFn> for LoxFn {
 }
 
 impl Eq for LoxFn {}
-
