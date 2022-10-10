@@ -2,16 +2,29 @@ use super::errors::{InterpreterError, RuntimeResult};
 use super::interpreter::Interpreter;
 use super::object::Object;
 use std::fmt;
+use std::rc::Rc;
 
-pub struct NativeFn {
-    pub func: fn(Vec<Object>, &mut Interpreter) -> RuntimeResult<Object>,
+type FnType = fn(Vec<Object>, &mut Interpreter) -> RuntimeResult<Object>;
+
+pub struct NativeFnData {
+    pub func: FnType,
     pub arity: usize,
     pub name: String,
 }
 
+#[derive(Clone)]
+pub struct NativeFn(Rc<NativeFnData>);
+
+
 impl NativeFn {
-    pub fn name(&self) -> String {
-        self.name.clone()
+    fn new(name: &str, func: FnType, arity: usize) -> Self{
+        let name = name.to_owned();
+        let data = NativeFnData{func, arity, name};
+        NativeFn(Rc::new(data))
+    }
+
+    pub fn name(&self) -> &str {
+        &self.0.name
     }
 
     pub fn execute(
@@ -19,37 +32,33 @@ impl NativeFn {
         args: Vec<Object>,
         interpreter: &mut Interpreter,
     ) -> RuntimeResult<Object> {
-        if self.arity == args.len() {
-            (self.func)(args, interpreter)
+        if self.0.arity == args.len() {
+            (self.0.func)(args, interpreter)
         } else {
-            Err(InterpreterError::WrongArity(self.arity, args.len()))
+            Err(InterpreterError::WrongArity(self.0.arity, args.len()))
         }
     }
 }
 
 impl fmt::Debug for NativeFn {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "<native-func {}>", self.name)
+        write!(f, "<native-func {}>", self.0.name)
     }
 }
 
 impl PartialEq<NativeFn> for NativeFn {
     // You cannot derive Eq for function pointers in Rust. Also, LLVM
     // can combine two different functions into one that have identical
-    // bodies. Safest option is to compare by name for native funcs.
-    fn eq(&self, other: &NativeFn) -> bool {
-        self.name == other.name
+    // bodies. Wrap function pointer in Rc and compare the Rcs.
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
     }
 }
 
 impl Eq for NativeFn {}
 
 pub fn get_native_funcs() -> Vec<NativeFn> {
-    vec![NativeFn {
-        func: clock,
-        arity: 0,
-        name: "clock".to_owned(),
-    }]
+    vec![NativeFn::new("clock", clock, 0)]
 }
 
 fn clock(_args: Vec<Object>, _interpreter: &mut Interpreter) -> RuntimeResult<Object> {

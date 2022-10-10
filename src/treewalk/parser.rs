@@ -5,6 +5,9 @@ use crate::treewalk::span::CodePosition;
 use crate::treewalk::token::{SpannedToken, Token};
 use std::iter::Peekable;
 
+use super::Interpreter;
+use super::errors::InterpreterError;
+
 pub struct Parser<T>
 where
     T: Iterator<Item = SpannedToken>,
@@ -113,8 +116,18 @@ where
 
                 Ok(Stmt::VariableDecl(name, expr))
             }
+            Token::Fun => self.parse_func_declaration(),
             _ => self.parse_statement(),
         }
+    }
+
+    fn parse_func_declaration(&mut self) -> ParserResult<Stmt> {
+        self.consume(Token::Fun)?;
+        let name = self.parse_identifier()?;
+        let params = self.parse_func_params()?;
+        let body = self.parse_block()?;
+
+        Ok(Stmt::FuncDecl(name, params, Box::new(body)))
     }
 
     /// Parse print and expression statements.
@@ -131,6 +144,7 @@ where
             Token::If => self.parse_if_else(),
             Token::While => self.parse_while(),
             Token::For => self.parse_for(),
+            Token::Return => self.parse_return_statement(),
             Token::LeftBrace => self.parse_block(),
             _ => {
                 let expr = self.parse_expression()?;
@@ -138,6 +152,40 @@ where
                 Ok(Stmt::Expression(expr))
             }
         }
+    }
+
+    fn parse_return_statement(&mut self) -> ParserResult<Stmt> {
+        self.consume(Token::Return)?;
+        let expr = if !self.check(Token::Semicolon) {
+            self.parse_expression()?
+        } else {
+            Expr::NilLiteral
+        };
+        self.consume(Token::Semicolon)?;
+        Ok(Stmt::Return(expr))
+    }
+
+    fn parse_func_params(&mut self) -> ParserResult<Vec<String>> {
+        self.consume(Token::LeftParen)?;
+        let mut args = vec![];
+
+        if self.check_consume(Token::RightParen) {
+            return Ok(args);
+        }
+
+        args.push(self.parse_identifier()?);
+
+        while !self.check_consume(Token::RightParen) {
+            self.consume(Token::Comma)?;
+            args.push(self.parse_identifier()?);
+        }
+
+        if args.len() >= MAX_FUNC_ARGS {
+            let span = self.peek_token().span;
+            return Err(ParserError::TooManyArgsAt(span.start_pos));
+        }
+
+        Ok(args)
     }
 
     /// Parse if else.
@@ -348,6 +396,7 @@ where
 
                 let args = self.parse_fn_args()?;
                 lhs = Expr::Call(Box::new(lhs), args);
+                continue;
             }
 
             break;

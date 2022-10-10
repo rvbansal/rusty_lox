@@ -1,25 +1,34 @@
 use super::ast::{Expr, Stmt};
 use super::environment::Environment;
 use super::errors::{InterpreterError, RuntimeResult};
-use super::native_funcs::{self, get_native_funcs};
+use super::native_function::get_native_funcs;
 use super::object::Object;
+use super::function::LoxFn;
 use super::operator::{InfixOperator, LogicalOperator, PrefixOperator};
 use std::rc::Rc;
 
 pub struct Interpreter {
-    env: Environment,
+    pub env: Environment,
+    pub globals: Environment
 }
 
 impl Interpreter {
     pub fn new() -> Self {
         let mut env = Environment::new();
         for native_func in get_native_funcs().into_iter() {
-            let name = native_func.name.clone();
-            let func = Object::NativeFunc(Rc::new(native_func));
+            let name = native_func.name().to_owned();
+            let func = Object::NativeFunc(native_func);
             env.define(name, func);
         }
+        let globals = env.clone();
 
-        Interpreter { env }
+        Interpreter { env, globals }
+    }
+
+    pub fn swap_env(&mut self, mut env: Environment) -> Environment {
+        std::mem::swap(&mut self.env, &mut env);
+        // Return old original interpreter env
+        env
     }
 
     pub fn eval_statements(&mut self, stmts: Vec<Stmt>) -> RuntimeResult<()> {
@@ -29,7 +38,7 @@ impl Interpreter {
         Ok(())
     }
 
-    fn eval_statement(&mut self, stmt: &Stmt) -> RuntimeResult<()> {
+    pub fn eval_statement(&mut self, stmt: &Stmt) -> RuntimeResult<()> {
         match stmt {
             Stmt::Expression(expr) => {
                 self.eval_expression(expr)?;
@@ -49,6 +58,22 @@ impl Interpreter {
                 Ok(())
             }
             Stmt::Block(stmts) => self.eval_block(stmts),
+            Stmt::FuncDecl(name, params, body) => {
+                let func = LoxFn::new(
+                    name.clone(), 
+                    params.clone(), 
+                    *body.clone(),
+                    self.env.clone()
+                );
+                self.env.define(
+                    name.clone(), Object::LoxFunc(func)
+                );
+                Ok(())
+            },
+            Stmt::Return(expr) => {
+                let value = self.eval_expression(expr)?;
+                Err(InterpreterError::Return(value))
+            }
         }
     }
 

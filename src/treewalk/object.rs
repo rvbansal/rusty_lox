@@ -1,6 +1,7 @@
 use super::errors::{InterpreterError, RuntimeResult};
 use super::interpreter::Interpreter;
-use super::native_funcs::NativeFn;
+use super::native_function::NativeFn;
+use super::function::LoxFn;
 use std::rc::Rc;
 
 #[derive(Debug, PartialEq, Clone)]
@@ -9,7 +10,8 @@ pub enum Object {
     Boolean(bool),
     String(String),
     Nil,
-    NativeFunc(Rc<NativeFn>),
+    NativeFunc(NativeFn),
+    LoxFunc(LoxFn)
 }
 
 impl Object {
@@ -28,6 +30,7 @@ impl Object {
     ) -> RuntimeResult<Object> {
         match self {
             Object::NativeFunc(f) => f.execute(args, interpreter),
+            Object::LoxFunc(f) => f.execute(args, interpreter),
             _ => Err(InterpreterError::NotCallable(self.clone())),
         }
     }
