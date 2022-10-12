@@ -74,20 +74,20 @@ impl Resolver {
                 self.resolve_expression(cond)?;
                 self.resolve_statement(body)?;
             }
-            Stmt::FuncDecl(name, params, body) => {
+            Stmt::FuncDecl(func_info) => {
                 // Handle the case where the function is used recursively.
                 // We need to define it eagerly.
-                self.define_variable(name);
+                self.define_variable(&func_info.name);
 
                 self.push_scope();
                 let prev_func_context = self.func_context;
                 self.func_context = FuncContext::InsideFunction;
 
-                for name in params.iter() {
+                for name in func_info.params.iter() {
                     self.define_variable(name);
                 }
 
-                self.resolve_statement(body)?;
+                self.resolve_statement(&mut func_info.body)?;
 
                 self.func_context = prev_func_context;
                 self.pop_scope();
@@ -97,6 +97,9 @@ impl Resolver {
                     return Err(ResolverError::ReturnStatementInGlobal);
                 }
                 self.resolve_expression(expr)?;
+            },
+            Stmt::ClassDecl(name, methods) => {
+                self.define_variable(name);
             }
         }
 
@@ -135,6 +138,13 @@ impl Resolver {
                 for arg in args.iter_mut() {
                     self.resolve_expression(arg)?;
                 }
+            },
+            Expr::Get(expr_obj, property) => {
+                self.resolve_expression(expr_obj)?;
+            },
+            Expr::Set(expr_lhs, property, expr_rhs) => {
+                self.resolve_expression(expr_lhs)?;
+                self.resolve_expression(expr_rhs)?;
             }
         }
         Ok(())
@@ -152,11 +162,8 @@ impl Resolver {
     /// we are initializing.
     fn is_during_var_initialization(&self, name: &str) -> bool {
         if let Some(scope) = self.scopes.last() {
-            match scope.get(name) {
-                Some(VariableState::Uninitialized) => {
-                    return true;
-                }
-                _ => (),
+            if let Some(VariableState::Uninitialized) = scope.get(name) {
+                return true;
             }
         }
         false
@@ -188,11 +195,8 @@ impl Resolver {
     }
 
     fn set_variable_state(&mut self, name: &str, var_state: VariableState) {
-        match self.scopes.last_mut() {
-            Some(scope) => {
-                scope.insert(name.to_owned(), var_state);
-            }
-            None => (),
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.insert(name.to_owned(), var_state);
         }
     }
 }

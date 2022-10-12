@@ -1,4 +1,5 @@
 mod ast;
+mod class;
 mod cursor;
 mod environment;
 mod errors;

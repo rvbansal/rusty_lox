@@ -1,4 +1,4 @@
-use super::ast::{Expr, Stmt, VariableInfo};
+use super::ast::{Expr, Stmt, VariableInfo, FuncInfo};
 use super::constants::MAX_FUNC_ARGS;
 use super::operator::{InfixOperator, LogicalOperator, Precedence, PrefixOperator};
 use super::span::CodePosition;
@@ -19,6 +19,7 @@ pub enum ParserError {
     ExpectedExprAt(CodePosition, Token),
     ExpectedIdentifierAt(CodePosition),
     TooManyArgsAt(CodePosition),
+    ExpectedLValueAt(CodePosition),
 }
 
 pub type ParserResult<T> = Result<T, ParserError>;
@@ -51,10 +52,7 @@ where
 
     /// Advances the stream, erroring if we're at end of file.
     fn bump(&mut self) {
-        match self.take_token().token {
-            Token::EndOfFile => panic!("Went beyond EOF."),
-            _ => (),
-        }
+        if self.take_token().token == Token::EndOfFile { panic!("Went beyond EOF.") }
     }
 
     /// Checks whether or not the current token matches the given token.
@@ -114,18 +112,24 @@ where
 
                 Ok(Stmt::VariableDecl(name, expr))
             }
-            Token::Fun => self.parse_func_declaration(),
+            Token::Fun => {
+                let func_info = self.parse_func_info(false)?;
+                Ok(Stmt::FuncDecl(func_info))
+            }
             _ => self.parse_statement(),
         }
     }
 
-    fn parse_func_declaration(&mut self) -> ParserResult<Stmt> {
-        self.consume(Token::Fun)?;
+    fn parse_func_info(&mut self, is_method: bool) -> ParserResult<FuncInfo> {
+        if !is_method {
+            self.consume(Token::Fun)?;
+        }
         let name = self.parse_identifier()?;
         let params = self.parse_func_params()?;
         let body = self.parse_block()?;
 
-        Ok(Stmt::FuncDecl(name, params, Box::new(body)))
+        let func_info = FuncInfo::new(name, params, body);
+        Ok(func_info)
     }
 
     /// Parse print and expression statements.
@@ -184,6 +188,21 @@ where
         }
 
         Ok(args)
+    }
+
+    /// Parse class declaration.
+    fn parse_class_decl(&mut self) -> ParserResult<Stmt> {
+        self.consume(Token::Class)?;
+        let name = self.parse_identifier()?;
+        self.consume(Token::LeftBrace)?;
+
+        let mut methods = vec![];
+        while !self.check_consume(Token::RightBrace) {
+            let method_info = self.parse_func_info(true)?;
+            methods.push(method_info);
+        }
+
+        Ok(Stmt::ClassDecl(name, methods))
     }
 
     /// Parse if else.
@@ -374,14 +393,37 @@ where
                 if Precedence::Assignment < min_precedence {
                     break;
                 }
+
                 self.bump();
-                // The lhs must he a variable identifier.
-                let var_info = match lhs {
-                    Expr::Variable(var_info) => VariableInfo::new(var_info.name.clone()),
-                    _ => return Err(ParserError::ExpectedIdentifierAt(span.start_pos)),
-                };
                 let rhs = self.run_pratt_parse_algo(Precedence::Assignment)?;
-                lhs = Expr::Assignment(var_info, Box::new(rhs));
+                let rhs_box = Box::new(rhs);
+                
+                lhs = match lhs {
+                    Expr::Variable(var_info) => {
+                        Expr::Assignment(
+                            VariableInfo::new(var_info.name),
+                            rhs_box
+                        )
+                    },
+                    Expr::Get(expr, property) => {
+                        Expr::Set(expr, property, rhs_box)
+                    },
+                    _ => return Err(ParserError::ExpectedLValueAt(span.start_pos)),
+                };
+
+                continue;
+            }
+
+            // Dot
+            if let Token::Dot = token {
+                if Precedence::Property < min_precedence {
+                    break;
+                }
+
+                self.bump();
+
+                let rhs = self.parse_identifier()?;
+                lhs = Expr::Get(Box::new(lhs), rhs);
                 continue;
             }
 

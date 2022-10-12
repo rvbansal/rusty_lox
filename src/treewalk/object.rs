@@ -2,6 +2,7 @@ use super::errors::{InterpreterError, RuntimeResult};
 use super::function::LoxFn;
 use super::interpreter::Interpreter;
 use super::native_function::NativeFn;
+use super::class::{LoxClassDataPtr, LoxInstanceDataPtr};
 
 
 #[derive(Debug, PartialEq, Clone)]
@@ -12,15 +13,13 @@ pub enum Object {
     Nil,
     NativeFunc(NativeFn),
     LoxFunc(LoxFn),
+    LoxClass(LoxClassDataPtr),
+    LoxInstance(LoxInstanceDataPtr)
 }
 
 impl Object {
     pub fn is_truthy(&self) -> bool {
-        match self {
-            Object::Nil => false,
-            Object::Boolean(false) => false,
-            _ => true,
-        }
+        !matches!(self, Object::Nil | Object::Boolean(false))
     }
 
     pub fn execute(
@@ -31,6 +30,7 @@ impl Object {
         match self {
             Object::NativeFunc(f) => f.execute(args, interpreter),
             Object::LoxFunc(f) => f.execute(args, interpreter),
+            Object::LoxClass(class) => class.execute(args, interpreter),
             _ => Err(InterpreterError::NotCallable(self.clone())),
         }
     }
