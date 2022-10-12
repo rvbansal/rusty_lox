@@ -66,5 +66,5 @@ fn clock(_args: Vec<Object>, _interpreter: &mut Interpreter) -> RuntimeResult<Ob
         .duration_since(UNIX_EPOCH)
         .expect("SystemTime before UNIX EPOCH.");
 
-    return Ok(Object::Number(duration.as_secs() as f64));
+    Ok(Object::Number(duration.as_secs() as f64))
 }

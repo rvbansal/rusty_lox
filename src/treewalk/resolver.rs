@@ -47,7 +47,7 @@ impl Resolver {
             Stmt::Expression(expr) => self.resolve_expression(expr)?,
             Stmt::Print(expr) => self.resolve_expression(expr)?,
             Stmt::VariableDecl(name, expr) => {
-                if self.is_var_already_defined(&name) {
+                if self.is_var_already_defined(name) {
                     return Err(ResolverError::LocalVarDefinedAlready(name.to_owned()));
                 }
 
@@ -145,7 +145,7 @@ impl Resolver {
         if let Some(scope) = self.scopes.last() {
             return scope.contains_key(name);
         }
-        return false;
+        false
     }
 
     /// Returns true if we are trying to resolve the same variable
@@ -159,7 +159,7 @@ impl Resolver {
                 _ => (),
             }
         }
-        return false;
+        false
     }
 
     fn resolve_local_variable(&self, var_info: &mut VariableInfo) {

@@ -3,11 +3,11 @@ use super::span::Span;
 use super::token::{SpannedToken, Token};
 
 fn is_digit_char(ch: char) -> bool {
-    return ch.is_ascii_digit();
+    ch.is_ascii_digit()
 }
 
 fn is_identified_char(ch: char) -> bool {
-    return ch.is_ascii_alphanumeric() || ch == '_';
+    ch.is_ascii_alphanumeric() || ch == '_'
 }
 
 pub struct Lexer<'src> {
@@ -139,7 +139,7 @@ impl<'src> Lexer<'src> {
         self.cursor.take();
 
         let scanned_string = self.source[start_idx..end_idx].to_owned();
-        return Ok(Token::String(scanned_string));
+        Ok(Token::String(scanned_string))
     }
 
     /// Scans a number and returns it.

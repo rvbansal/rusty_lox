@@ -2,7 +2,7 @@ use super::errors::{InterpreterError, RuntimeResult};
 use super::function::LoxFn;
 use super::interpreter::Interpreter;
 use super::native_function::NativeFn;
-use std::rc::Rc;
+
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum Object {

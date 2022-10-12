@@ -63,6 +63,6 @@ impl SpannedToken {
     }
 
     pub fn split(self) -> (Token, Span) {
-        return (self.token, self.span);
+        (self.token, self.span)
     }
 }

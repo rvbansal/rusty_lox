@@ -35,7 +35,7 @@ pub enum Stmt {
 impl VariableInfo {
     pub fn new(name: String) -> Self {
         VariableInfo {
-            name: name,
+            name,
             env_hops: None,
         }
     }

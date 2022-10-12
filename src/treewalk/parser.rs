@@ -44,7 +44,7 @@ where
     /// Returns current token and advances stream.
     fn take_token(&mut self) -> SpannedToken {
         match self.tokens.next() {
-            Some(t) => t.clone(),
+            Some(t) => t,
             None => panic!("Went beyond EOF."),
         }
     }
@@ -59,17 +59,17 @@ where
 
     /// Checks whether or not the current token matches the given token.
     fn check(&mut self, t: Token) -> bool {
-        return self.peek_token().token == t;
+        self.peek_token().token == t
     }
 
     /// Checks whether or not the current token matches the given token.
     /// If true consume it and return true, else return false.
     fn check_consume(&mut self, t: Token) -> bool {
-        if self.check(t) == true {
+        if self.check(t) {
             self.bump();
             return true;
         }
-        return false;
+        false
     }
 
     /// Checks whether or not the current token matches the given token.
@@ -93,7 +93,7 @@ where
             stmts.push(stmt);
         }
 
-        return stmts;
+        stmts
     }
 
     /// Handle variable declations separately from non-declaring statements
@@ -280,7 +280,7 @@ where
     fn parse_identifier(&mut self) -> ParserResult<String> {
         let (token, span) = self.take_token().split();
         match token {
-            Token::Identifier(name) => Ok(name.clone()),
+            Token::Identifier(name) => Ok(name),
             _ => Err(ParserError::ExpectedIdentifierAt(span.start_pos)),
         }
     }

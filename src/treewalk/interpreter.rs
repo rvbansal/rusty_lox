@@ -239,7 +239,7 @@ mod tests {
 
     fn test_eval_func(expr: &Expr) -> RuntimeResult<Object> {
         let mut interpreter = Interpreter::new();
-        return interpreter.eval_expression(expr);
+        interpreter.eval_expression(expr)
     }
 
     #[test]
