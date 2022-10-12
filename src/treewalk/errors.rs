@@ -10,6 +10,7 @@ pub enum InterpreterError {
     NotCallable(Object),
     MissingProperty(Object, String),
     NotAnInstance(Object),
+    NotAClass(Object),
     // We want to unwind the call stack at a return statement, so
     // it functions much like an error.
     Return(Object),

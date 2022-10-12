@@ -1,5 +1,5 @@
-use super::ast::{Expr, Stmt, VariableInfo, FuncInfo};
-use super::constants::MAX_FUNC_ARGS;
+use super::ast::{Expr, FuncInfo, Stmt, VariableInfo};
+use super::constants::{MAX_FUNC_ARGS, SUPER_STR, THIS_STR};
 use super::operator::{InfixOperator, LogicalOperator, Precedence, PrefixOperator};
 use super::span::CodePosition;
 use super::token::{SpannedToken, Token};
@@ -52,7 +52,9 @@ where
 
     /// Advances the stream, erroring if we're at end of file.
     fn bump(&mut self) {
-        if self.take_token().token == Token::EndOfFile { panic!("Went beyond EOF.") }
+        if self.take_token().token == Token::EndOfFile {
+            panic!("Went beyond EOF.")
+        }
     }
 
     /// Checks whether or not the current token matches the given token.
@@ -195,6 +197,13 @@ where
     fn parse_class_decl(&mut self) -> ParserResult<Stmt> {
         self.consume(Token::Class)?;
         let name = self.parse_identifier()?;
+
+        let superclass = if self.check_consume(Token::LeftAngle) {
+            Some(VariableInfo::new(self.parse_identifier()?))
+        } else {
+            None
+        };
+
         self.consume(Token::LeftBrace)?;
 
         let mut methods = vec![];
@@ -203,7 +212,7 @@ where
             methods.push(method_info);
         }
 
-        Ok(Stmt::ClassDecl(name, methods))
+        Ok(Stmt::ClassDecl(name, superclass, methods))
     }
 
     /// Parse if else.
@@ -212,17 +221,17 @@ where
         self.consume(Token::LeftParen)?;
         let condition = self.parse_expression()?;
         self.consume(Token::RightParen)?;
-        let if_triggered_body = self.parse_statement()?;
+        let if_triggered_body = Box::new(self.parse_statement()?);
         let else_triggered_body = if self.check_consume(Token::Else) {
-            Some(self.parse_statement()?)
+            Some(Box::new(self.parse_statement()?))
         } else {
             None
         };
 
         Ok(Stmt::IfElse(
             condition,
-            Box::new(if_triggered_body),
-            Box::new(else_triggered_body),
+            if_triggered_body,
+            else_triggered_body,
         ))
     }
 
@@ -344,6 +353,13 @@ where
             Token::String(s) => Expr::StringLiteral(s),
             Token::Nil => Expr::NilLiteral,
             Token::Identifier(name) => Expr::Variable(VariableInfo::new(name)),
+            Token::This => Expr::This(VariableInfo::new(THIS_STR.to_owned())),
+            Token::Super => {
+                let var = VariableInfo::new(SUPER_STR.to_owned());
+                self.consume(Token::Dot)?;
+                let method = self.parse_identifier()?;
+                Expr::Super(var, method)
+            }
             // Parentheses
             Token::LeftParen => {
                 let expr = self.parse_expression()?;
@@ -398,17 +414,12 @@ where
                 self.bump();
                 let rhs = self.run_pratt_parse_algo(Precedence::Assignment)?;
                 let rhs_box = Box::new(rhs);
-                
+
                 lhs = match lhs {
                     Expr::Variable(var_info) => {
-                        Expr::Assignment(
-                            VariableInfo::new(var_info.name),
-                            rhs_box
-                        )
-                    },
-                    Expr::Get(expr, property) => {
-                        Expr::Set(expr, property, rhs_box)
-                    },
+                        Expr::Assignment(VariableInfo::new(var_info.name), rhs_box)
+                    }
+                    Expr::Get(expr, property) => Expr::Set(expr, property, rhs_box),
                     _ => return Err(ParserError::ExpectedLValueAt(span.start_pos)),
                 };
 

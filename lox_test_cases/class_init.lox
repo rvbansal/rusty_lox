@@ -1,0 +1,21 @@
+class Foo {
+  init() {
+    print this;
+  }
+}
+
+var foo = Foo();
+print foo.init();
+
+
+
+class Foo2 {
+  init(x, y) {
+    this.x = x;
+    this.y = y - 90;
+  }
+}
+
+var foo2 = Foo2(100, 200);
+print foo2.x;
+print foo2.y;

@@ -1,4 +1,5 @@
-use super::ast::{Expr, Stmt, VariableInfo};
+use super::ast::{Expr, FuncInfo, Stmt, VariableInfo};
+use super::constants::{INIT_STR, SUPER_STR, THIS_STR};
 use std::collections::HashMap;
 
 type Scope = HashMap<String, VariableState>;
@@ -12,12 +13,22 @@ enum VariableState {
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 enum FuncContext {
     Global,
-    InsideFunction,
+    Function,
+    Method,
+    Initializer,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+enum ClassContext {
+    Global,
+    Class,
+    Subclass,
 }
 
 pub struct Resolver {
     scopes: Vec<Scope>,
     func_context: FuncContext,
+    class_context: ClassContext,
 }
 
 #[derive(Debug)]
@@ -25,6 +36,10 @@ pub enum ResolverError {
     ReturnStatementInGlobal,
     UseVarInInitialization(String),
     LocalVarDefinedAlready(String),
+    ReferencetoThisOutsideOfClass,
+    ReturnInInitializer,
+    SuperClassIsSelf,
+    NoSuperClass,
 }
 
 pub type ResolverResult<T> = Result<T, ResolverError>;
@@ -34,6 +49,7 @@ impl Resolver {
         Resolver {
             scopes: vec![],
             func_context: FuncContext::Global,
+            class_context: ClassContext::Global,
         }
     }
 
@@ -66,7 +82,7 @@ impl Resolver {
                 self.resolve_expression(cond)?;
                 self.resolve_statement(if_body)?;
 
-                if let Some(ref mut else_body) = **else_body {
+                if let Some(else_body) = else_body {
                     self.resolve_statement(else_body)?;
                 }
             }
@@ -74,34 +90,82 @@ impl Resolver {
                 self.resolve_expression(cond)?;
                 self.resolve_statement(body)?;
             }
-            Stmt::FuncDecl(func_info) => {
-                // Handle the case where the function is used recursively.
-                // We need to define it eagerly.
-                self.define_variable(&func_info.name);
-
-                self.push_scope();
-                let prev_func_context = self.func_context;
-                self.func_context = FuncContext::InsideFunction;
-
-                for name in func_info.params.iter() {
-                    self.define_variable(name);
-                }
-
-                self.resolve_statement(&mut func_info.body)?;
-
-                self.func_context = prev_func_context;
-                self.pop_scope();
-            }
+            Stmt::FuncDecl(func_info) => self.resolve_function(func_info, FuncContext::Function)?,
             Stmt::Return(expr) => {
                 if self.func_context == FuncContext::Global {
                     return Err(ResolverError::ReturnStatementInGlobal);
                 }
+                if self.func_context == FuncContext::Initializer && *expr != Expr::NilLiteral {
+                    return Err(ResolverError::ReturnInInitializer);
+                }
                 self.resolve_expression(expr)?;
-            },
-            Stmt::ClassDecl(name, methods) => {
+            }
+            Stmt::ClassDecl(name, superclass, methods) => {
                 self.define_variable(name);
+
+                if let Some(superclass) = superclass {
+                    if superclass.name == **name {
+                        return Err(ResolverError::SuperClassIsSelf);
+                    }
+                    self.resolve_local_variable(superclass);
+                }
+
+                if superclass.is_some() {
+                    self.push_scope();
+                    self.define_variable(SUPER_STR);
+                }
+
+                self.push_scope();
+                self.define_variable(THIS_STR);
+
+                let prev_context = self.class_context;
+                self.class_context = if superclass.is_some() {
+                    ClassContext::Subclass
+                } else {
+                    ClassContext::Class
+                };
+
+                for method in methods.iter_mut() {
+                    let context = if method.name == INIT_STR {
+                        FuncContext::Initializer
+                    } else {
+                        FuncContext::Method
+                    };
+                    self.resolve_function(method, context)?;
+                }
+
+                self.class_context = prev_context;
+                self.pop_scope();
+                if superclass.is_some() {
+                    self.pop_scope();
+                }
             }
         }
+
+        Ok(())
+    }
+
+    fn resolve_function(
+        &mut self,
+        func_info: &mut FuncInfo,
+        context: FuncContext,
+    ) -> ResolverResult<()> {
+        // Handle the case where the function is used recursively.
+        // We need to define it eagerly.
+        self.define_variable(&func_info.name);
+
+        self.push_scope();
+        let prev_func_context = self.func_context;
+        self.func_context = context;
+
+        for name in func_info.params.iter() {
+            self.define_variable(name);
+        }
+
+        self.resolve_statement(&mut func_info.body)?;
+
+        self.func_context = prev_func_context;
+        self.pop_scope();
 
         Ok(())
     }
@@ -138,13 +202,25 @@ impl Resolver {
                 for arg in args.iter_mut() {
                     self.resolve_expression(arg)?;
                 }
-            },
-            Expr::Get(expr_obj, property) => {
+            }
+            Expr::Get(expr_obj, _property) => {
                 self.resolve_expression(expr_obj)?;
-            },
-            Expr::Set(expr_lhs, property, expr_rhs) => {
+            }
+            Expr::Set(expr_lhs, _property, expr_rhs) => {
                 self.resolve_expression(expr_lhs)?;
                 self.resolve_expression(expr_rhs)?;
+            }
+            Expr::This(var) => {
+                if self.class_context == ClassContext::Global {
+                    return Err(ResolverError::ReferencetoThisOutsideOfClass);
+                }
+                self.resolve_local_variable(var);
+            }
+            Expr::Super(var, _) => {
+                if self.class_context != ClassContext::Subclass {
+                    return Err(ResolverError::NoSuperClass);
+                }
+                self.resolve_local_variable(var);
             }
         }
         Ok(())

@@ -1,4 +1,5 @@
 use super::ast::Stmt;
+use super::constants::THIS_STR;
 use super::environment::Environment;
 use super::errors::{InterpreterError, RuntimeResult};
 use super::interpreter::Interpreter;
@@ -11,6 +12,7 @@ pub struct LoxFnData {
     name: String,
     params: Vec<String>,
     body: Stmt,
+    is_initializer: bool,
     closure: Environment,
 }
 
@@ -18,14 +20,25 @@ pub struct LoxFnData {
 pub struct LoxFn(Rc<LoxFnData>);
 
 impl LoxFn {
-    pub fn new(name: String, params: Vec<String>, body: Stmt, closure: Environment) -> Self {
+    pub fn new(
+        name: String,
+        params: Vec<String>,
+        body: Stmt,
+        is_initializer: bool,
+        closure: Environment,
+    ) -> Self {
         let data = LoxFnData {
             name,
             params,
             body,
+            is_initializer,
             closure,
         };
         LoxFn(Rc::new(data))
+    }
+
+    pub fn arity(&self) -> usize {
+        self.0.params.len()
     }
 
     pub fn execute(
@@ -33,11 +46,8 @@ impl LoxFn {
         args: Vec<Object>,
         interpreter: &mut Interpreter,
     ) -> RuntimeResult<Object> {
-        if args.len() != self.0.params.len() {
-            return Err(InterpreterError::WrongArity(
-                self.0.params.len(),
-                args.len(),
-            ));
+        if self.arity() != args.len() {
+            return Err(InterpreterError::WrongArity(self.arity(), args.len()));
         }
 
         // Create a new environment pointing to surrounding closure
@@ -55,7 +65,29 @@ impl LoxFn {
         };
 
         interpreter.swap_env(prev_env);
-        result
+
+        let result = result?;
+
+        if self.0.is_initializer {
+            let this = self.0.closure.get(THIS_STR);
+            let this = this.expect("`this` unavailable in closure");
+            Ok(this)
+        } else {
+            Ok(result)
+        }
+    }
+
+    pub fn bind(&self, instance: Object) -> Self {
+        let new_env = Environment::with_enclosing(&self.0.closure);
+        new_env.define(THIS_STR.to_owned(), instance);
+
+        LoxFn::new(
+            self.0.name.clone(),
+            self.0.params.clone(),
+            self.0.body.clone(),
+            self.0.is_initializer,
+            new_env,
+        )
     }
 }
 

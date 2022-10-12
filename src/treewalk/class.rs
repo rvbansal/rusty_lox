@@ -1,4 +1,6 @@
+use super::constants::INIT_STR;
 use super::errors::{InterpreterError, RuntimeResult};
+use super::function::LoxFn;
 use super::interpreter::Interpreter;
 use super::object::Object;
 
@@ -9,6 +11,8 @@ use std::rc::Rc;
 
 struct LoxClassData {
     name: String,
+    superclass: Option<LoxClassDataPtr>,
+    methods: HashMap<String, LoxFn>,
 }
 
 #[derive(Clone)]
@@ -23,9 +27,25 @@ pub struct LoxInstanceData {
 pub struct LoxInstanceDataPtr(Rc<LoxInstanceData>);
 
 impl LoxClassDataPtr {
-    pub fn new(name: String) -> Self {
-        let data = LoxClassData { name };
+    pub fn new(
+        name: String,
+        superclass: Option<LoxClassDataPtr>,
+        methods: HashMap<String, LoxFn>,
+    ) -> Self {
+        let data = LoxClassData {
+            name,
+            superclass,
+            methods,
+        };
         LoxClassDataPtr(Rc::new(data))
+    }
+
+    pub fn find_method(&self, name: &str) -> Option<LoxFn> {
+        let method = self.0.methods.get(name).cloned();
+        match &self.0.superclass {
+            Some(superclass) => method.or_else(|| superclass.find_method(name)),
+            None => method,
+        }
     }
 
     pub fn execute(
@@ -33,12 +53,23 @@ impl LoxClassDataPtr {
         args: Vec<Object>,
         interpreter: &mut Interpreter,
     ) -> RuntimeResult<Object> {
-        if !args.is_empty() {
-            return Err(InterpreterError::WrongArity(0, args.len()));
+        if self.arity() != args.len() {
+            return Err(InterpreterError::WrongArity(self.arity(), args.len()));
         }
 
         let instance = LoxInstanceDataPtr::new(self);
+        if let Some(init) = instance.find_bound_method(INIT_STR) {
+            init.execute(args, interpreter)?;
+        }
+
         Ok(Object::LoxInstance(instance))
+    }
+
+    pub fn arity(&self) -> usize {
+        match self.0.methods.get(INIT_STR) {
+            Some(init) => init.arity(),
+            None => 0,
+        }
     }
 }
 
@@ -51,22 +82,42 @@ impl LoxInstanceDataPtr {
         LoxInstanceDataPtr(Rc::new(data))
     }
 
-    pub fn get(&self, property: &str) -> RuntimeResult<Object> {
-        match self.0.properties.borrow().get(property) {
-            Some(value) => Ok(value.clone()),
-            None => {
-                let obj = Object::LoxInstance(self.clone());
-                Err(InterpreterError::MissingProperty(obj, property.to_owned()))
-            }
+    pub fn get(&self, name: &str) -> RuntimeResult<Object> {
+        if let Some(obj) = self.lookup_property(name) {
+            return Ok(obj);
         }
+
+        if let Some(method) = self.find_bound_method(name) {
+            return Ok(method);
+        }
+
+        let self_instance = Object::LoxInstance(self.clone());
+        Err(InterpreterError::MissingProperty(
+            self_instance,
+            name.to_owned(),
+        ))
     }
 
-    pub fn set(&self, property: &str, value: Object) -> RuntimeResult<()> {
+    pub fn set(&self, property: &str, value: Object) {
         self.0
             .properties
             .borrow_mut()
             .insert(property.to_owned(), value);
-        Ok(())
+    }
+
+    fn lookup_property(&self, name: &str) -> Option<Object> {
+        self.0.properties.borrow().get(name).cloned()
+    }
+
+    fn find_bound_method(&self, name: &str) -> Option<Object> {
+        match self.0.class.find_method(name) {
+            Some(method) => {
+                let self_instance = Object::LoxInstance(self.clone());
+                let bound_method = method.bind(self_instance);
+                Some(Object::LoxFunc(bound_method))
+            }
+            None => None,
+        }
     }
 }
 

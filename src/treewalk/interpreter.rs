@@ -1,11 +1,15 @@
-use super::ast::{Expr, Stmt};
+use super::ast::{Expr, FuncInfo, Stmt, VariableInfo};
+use super::class::LoxClassDataPtr;
+use super::constants::{INIT_STR, SUPER_STR, THIS_STR};
 use super::environment::Environment;
 use super::errors::{InterpreterError, RuntimeResult};
 use super::function::LoxFn;
-use super::class::LoxClassDataPtr;
 use super::native_function::get_native_funcs;
 use super::object::Object;
 use super::operator::{InfixOperator, LogicalOperator, PrefixOperator};
+
+use std::collections::HashMap;
+
 
 pub struct Interpreter {
     pub env: Environment,
@@ -47,7 +51,7 @@ impl Interpreter {
                 println!("[out] {:?}", self.eval_expression(expr)?);
             }
             Stmt::IfElse(if_condition, if_body, else_body) => {
-                self.eval_if_else(if_condition, if_body, else_body)?
+                self.eval_if_else(if_condition, if_body, else_body.as_deref())?
             }
             Stmt::While(condition, body) => self.eval_while(condition, body)?,
             Stmt::VariableDecl(name, expr) => {
@@ -56,20 +60,38 @@ impl Interpreter {
             }
             Stmt::Block(stmts) => self.eval_block(stmts)?,
             Stmt::FuncDecl(func_info) => {
-                let func = LoxFn::new(
+                self.env.define(
                     func_info.name.clone(),
-                    func_info.params.clone(),
-                    *func_info.body.clone(),
-                    self.env.clone(),
+                    Object::LoxFunc(self.make_fn(func_info, false)),
                 );
-                self.env.define(func_info.name.clone(), Object::LoxFunc(func));
             }
             Stmt::Return(expr) => {
                 let value = self.eval_expression(expr)?;
                 return Err(InterpreterError::Return(value));
             }
-            Stmt::ClassDecl(name, methods) => {
-                let class = LoxClassDataPtr::new(name.clone());
+            Stmt::ClassDecl(name, superclass_name, methods_info) => {
+                let superclass = match superclass_name {
+                    None => None,
+                    Some(class) => match self.env_var_lookup(class)? {
+                        Object::LoxClass(class) => Some(class),
+                        obj => return Err(InterpreterError::NotAClass(obj)),
+                    },
+                };
+
+                let curr_env = self.env.clone();
+                if let Some(superclass) = &superclass {
+                    let superclass_obj = Object::LoxClass(superclass.clone());
+                    self.env = Environment::with_enclosing(&self.env);
+                    self.env.define(SUPER_STR.to_string(), superclass_obj);
+                }
+
+                let mut methods = HashMap::new();
+                for method in methods_info.iter() {
+                    methods.insert(method.name.clone(), self.make_fn(method, true));
+                }
+
+                self.env = curr_env;
+                let class = LoxClassDataPtr::new(name.clone(), superclass, methods);
                 self.env.define(name.clone(), Object::LoxClass(class));
             }
         }
@@ -77,11 +99,23 @@ impl Interpreter {
         Ok(())
     }
 
+    fn make_fn(&self, func_info: &FuncInfo, is_method: bool) -> LoxFn {
+        let is_initializer = is_method && func_info.name == INIT_STR;
+
+        LoxFn::new(
+            func_info.name.clone(),
+            func_info.params.clone(),
+            *func_info.body.clone(),
+            is_initializer,
+            self.env.clone(),
+        )
+    }
+
     pub fn eval_if_else(
         &mut self,
         if_condition: &Expr,
         if_body: &Stmt,
-        else_body: &Option<Stmt>,
+        else_body: Option<&Stmt>,
     ) -> RuntimeResult<()> {
         if self.eval_expression(if_condition)?.is_truthy() {
             return self.eval_statement(if_body);
@@ -130,10 +164,7 @@ impl Interpreter {
             Expr::Infix(op, lhs, rhs) => self.eval_infix_operator(op, lhs, rhs),
             Expr::Prefix(op, expr) => self.eval_prefix_operator(op, expr),
             Expr::Logical(op, lhs, rhs) => self.eval_logical_operator(op, lhs, rhs),
-            Expr::Variable(var_info) => match var_info.env_hops {
-                Some(env_hops) => self.env.get_at(env_hops, &var_info.name),
-                None => self.globals.get(&var_info.name),
-            },
+            Expr::Variable(var_info) => self.env_var_lookup(var_info),
             Expr::Assignment(var_info, expr) => {
                 let value = self.eval_expression(expr)?;
                 match var_info.env_hops {
@@ -147,13 +178,38 @@ impl Interpreter {
             Expr::Set(expr_lhs, property, expr_rhs) => {
                 self.eval_property_set(expr_lhs, property, expr_rhs)
             }
+            Expr::This(var) => self.env_var_lookup(var),
+            Expr::Super(var, method) => {
+                let superclass = match self.env_var_lookup(var)? {
+                    Object::LoxClass(cls) => cls,
+                    _ => panic!("super is not a class"),
+                };
+
+                let err_msg = "Cannot find super environment";
+                let this_depth = var.env_hops.expect(err_msg).checked_sub(1).expect(err_msg);
+                let this = self.env.get_at(this_depth, THIS_STR).expect(err_msg);
+                match superclass.find_method(method) {
+                    Some(method) => Ok(Object::LoxFunc(method.bind(this))),
+                    None => Err(InterpreterError::MissingProperty(
+                        this,
+                        method.to_owned(),
+                    )),
+                }
+            }
+        }
+    }
+
+    fn env_var_lookup(&self, var_info: &VariableInfo) -> RuntimeResult<Object> {
+        match var_info.env_hops {
+            Some(env_hops) => self.env.get_at(env_hops, &var_info.name),
+            None => self.globals.get(&var_info.name),
         }
     }
 
     fn eval_property_get(&mut self, expr: &Expr, property: &str) -> RuntimeResult<Object> {
         match self.eval_expression(expr)? {
             Object::LoxInstance(instance) => Ok(instance.get(property)?),
-            other => Err(InterpreterError::NotAnInstance(other))
+            other => Err(InterpreterError::NotAnInstance(other)),
         }
     }
 
@@ -161,15 +217,15 @@ impl Interpreter {
         &mut self,
         expr_lhs: &Expr,
         property: &str,
-        expr_rhs: &Expr
+        expr_rhs: &Expr,
     ) -> RuntimeResult<Object> {
         let instance = match self.eval_expression(expr_lhs)? {
             Object::LoxInstance(instance) => instance,
-            other => return Err(InterpreterError::NotAnInstance(other))
+            other => return Err(InterpreterError::NotAnInstance(other)),
         };
 
         let value = self.eval_expression(expr_rhs)?;
-        instance.set(property, value.clone())?;
+        instance.set(property, value.clone());
 
         Ok(value)
     }

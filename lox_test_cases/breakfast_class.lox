@@ -12,3 +12,18 @@ var b1 = Breakfast();
 b1.item = 3;
 print b1;
 print b1.item;
+
+b1.cook();
+b1.serve("Raghav");
+
+
+class Cake {
+  taste() {
+    var adjective = "delicious";
+    print "The " + this.flavor + " cake is " + adjective + "!";
+  }
+}
+
+var cake = Cake();
+cake.flavor = "German chocolate";
+cake.taste(); // Prints "The German chocolate cake is delicious!".

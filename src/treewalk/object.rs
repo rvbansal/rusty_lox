@@ -1,9 +1,8 @@
+use super::class::{LoxClassDataPtr, LoxInstanceDataPtr};
 use super::errors::{InterpreterError, RuntimeResult};
 use super::function::LoxFn;
 use super::interpreter::Interpreter;
 use super::native_function::NativeFn;
-use super::class::{LoxClassDataPtr, LoxInstanceDataPtr};
-
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum Object {
@@ -14,7 +13,7 @@ pub enum Object {
     NativeFunc(NativeFn),
     LoxFunc(LoxFn),
     LoxClass(LoxClassDataPtr),
-    LoxInstance(LoxInstanceDataPtr)
+    LoxInstance(LoxInstanceDataPtr),
 }
 
 impl Object {
