@@ -116,6 +116,7 @@ where
                 let func_info = self.parse_func_info(false)?;
                 Ok(Stmt::FuncDecl(func_info))
             }
+            Token::Class => self.parse_class_decl(),
             _ => self.parse_statement(),
         }
     }
