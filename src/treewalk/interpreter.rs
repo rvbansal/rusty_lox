@@ -1,4 +1,4 @@
-use super::ast::{Expr, ExprType, FuncInfo, Literal, Stmt, StmtType, VariableInfo};
+use super::ast::{Expr, ExprType, Stmt, StmtType, VariableInfo, FuncInfo, Literal};
 use super::class::LoxClassDataPtr;
 use super::constants::{INIT_STR, SUPER_STR, THIS_STR};
 use super::environment::Environment;
@@ -82,9 +82,9 @@ impl Interpreter {
 
                 let curr_env = self.env.clone();
                 if let Some(superclass) = &superclass {
-                    let superclass_obj = Object::LoxClass(superclass.clone());
+                    let superclass_copy = Object::LoxClass(superclass.clone());
                     self.env = Environment::with_enclosing(&self.env);
-                    self.env.define(SUPER_STR.to_string(), superclass_obj);
+                    self.env.define(SUPER_STR.to_string(), superclass_copy);
                 }
 
                 let mut methods = HashMap::new();
@@ -103,7 +103,6 @@ impl Interpreter {
 
     fn make_fn(&self, func_info: &FuncInfo, is_method: bool) -> LoxFn {
         let is_initializer = is_method && func_info.name == INIT_STR;
-
         LoxFn::new(func_info.clone(), is_initializer, self.env.clone())
     }
 
@@ -116,7 +115,6 @@ impl Interpreter {
         if self.eval_expression(if_condition)?.is_truthy() {
             return self.eval_statement(if_body);
         }
-
         if let Some(else_body) = else_body {
             return self.eval_statement(else_body);
         }
@@ -267,7 +265,6 @@ impl Interpreter {
 
     pub fn eval_func_call(&mut self, callee: &Expr, raw_args: &Vec<Expr>) -> RuntimeResult<Object> {
         let callee = self.eval_expression(callee)?;
-
         let mut args = Vec::with_capacity(raw_args.len());
         for raw_arg in raw_args.iter() {
             args.push(self.eval_expression(raw_arg)?);

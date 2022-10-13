@@ -2,14 +2,6 @@ use super::cursor::Cursor;
 use super::span::Span;
 use super::token::{SpannedToken, Token};
 
-fn is_digit_char(ch: char) -> bool {
-    ch.is_ascii_digit()
-}
-
-fn is_identified_char(ch: char) -> bool {
-    ch.is_ascii_alphanumeric() || ch == '_'
-}
-
 pub struct Lexer<'src> {
     source: &'src str,
     cursor: Cursor<'src>,
@@ -19,7 +11,7 @@ pub struct Lexer<'src> {
 pub type LexerResult<T> = Result<T, String>;
 
 impl<'src> Lexer<'src> {
-    /// Creates a lexer from source code.
+    /// Creates a lexer from source.
     pub fn new(source: &'src str) -> Self {
         Lexer {
             source,
@@ -94,19 +86,20 @@ impl<'src> Lexer<'src> {
             _ => Err(format!("Unrecognized token `{}`", ch)),
         };
 
-        // If we get valid token, return it. Else bubble up error.
+        // If we get valid token, return it. Else, bubble up error.
         match token_result {
             Ok(token) => {
                 let end_pos = self.cursor.get_position();
                 let span = Span::new(start_pos, end_pos);
-                let token = SpannedToken::new(token, span);
-                Some(Ok(token))
+                let spanned_token = SpannedToken::new(token, span);
+                Some(Ok(spanned_token))
             }
             Err(e) => Some(Err(format!("{}: {}", start_pos, e))),
         }
     }
 
     fn consume_line(&mut self) {
+        // Consume chars.
         self.cursor.take_while(|ch| ch != '\n');
         // Consume newline char.
         self.cursor.take();
@@ -128,8 +121,8 @@ impl<'src> Lexer<'src> {
         // Move past starting quote, '"'.
         let start_idx = start_idx + 1;
 
+        // Move until double quote.
         self.cursor.take_until(|ch| ch == '"');
-
         let end_idx = match self.cursor.peek() {
             None => return Err("Unterminated string.".to_owned()),
             Some((i, _)) => i,
@@ -219,4 +212,12 @@ impl<'src> Iterator for LexerIterator<'src> {
     fn next(&mut self) -> Option<Self::Item> {
         self.lexer.scan_token()
     }
+}
+
+fn is_digit_char(ch: char) -> bool {
+    ch.is_ascii_digit()
+}
+
+fn is_identified_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || ch == '_'
 }

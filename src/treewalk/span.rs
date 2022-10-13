@@ -7,7 +7,7 @@ pub struct CodePosition {
     pub column_no: usize,
 }
 
-/// Represents span of full source code.
+/// Represents span of full statement/expression.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct Span {
     pub start_pos: CodePosition,
@@ -36,10 +36,10 @@ impl Span {
         Span::new(default_pos, default_pos)
     }
 
-    pub fn unite(&self, other: Self) -> Self {
+    pub fn extend(&self, other: Self) -> Self {
         Span {
             start_pos: std::cmp::min(self.start_pos, other.start_pos),
-            end_pos: std::cmp::max(self.start_pos, other.start_pos),
+            end_pos: std::cmp::max(self.end_pos, other.end_pos),
         }
     }
 }

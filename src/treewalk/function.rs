@@ -43,10 +43,12 @@ impl LoxFn {
         // Create a new environment pointing to surrounding closure
         let env = Environment::with_enclosing(&self.0.closure);
 
+        // Define params in environment
         for (param, arg) in self.0.fn_data.params.iter().zip(args.into_iter()) {
             env.define(param.clone(), arg);
         }
 
+        // Swap interpreter to new env
         let prev_env = interpreter.swap_env(env);
         let result = match interpreter.eval_statement(&self.0.fn_data.body) {
             Ok(_) => Ok(Object::Nil),
@@ -54,10 +56,10 @@ impl LoxFn {
             Err(e) => Err(e),
         };
 
+        // Swap back to closure env
         interpreter.swap_env(prev_env);
 
         let result = result?;
-
         if self.0.is_initializer {
             let this = self.0.closure.get(THIS_STR);
             let this = this.expect("`this` unavailable in closure");
@@ -70,7 +72,6 @@ impl LoxFn {
     pub fn bind(&self, instance: Object) -> Self {
         let new_env = Environment::with_enclosing(&self.0.closure);
         new_env.define(THIS_STR.to_owned(), instance);
-
         LoxFn::new(self.0.fn_data.clone(), self.0.is_initializer, new_env)
     }
 }

@@ -1,4 +1,4 @@
-use super::ast::{Expr, ExprType, FuncInfo, Stmt, StmtType, VariableInfo};
+use super::ast::{Expr, ExprType, Stmt, StmtType, VariableInfo, FuncInfo};
 use super::constants::{INIT_STR, SUPER_STR, THIS_STR};
 use std::collections::HashMap;
 
@@ -38,8 +38,8 @@ pub enum ResolverError {
     LocalVarDefinedAlready(String),
     ReferencetoThisOutsideOfClass,
     ReturnInInitializer,
-    SuperClassIsSelf,
-    NoSuperClass,
+    SuperClassIsSameAsClass,
+    SuperStatementOutsideClass,
 }
 
 pub type ResolverResult<T> = Result<T, ResolverError>;
@@ -66,7 +66,7 @@ impl Resolver {
                 if self.is_var_already_defined(name) {
                     return Err(ResolverError::LocalVarDefinedAlready(name.to_owned()));
                 }
-
+                
                 self.declare_variable(name);
                 self.resolve_expression(expr)?;
                 self.define_variable(name);
@@ -109,7 +109,7 @@ impl Resolver {
 
                 if let Some(superclass) = superclass {
                     if superclass.name == **name {
-                        return Err(ResolverError::SuperClassIsSelf);
+                        return Err(ResolverError::SuperClassIsSameAsClass);
                     }
                     self.resolve_local_variable(superclass);
                 }
@@ -118,7 +118,6 @@ impl Resolver {
                     self.push_scope();
                     self.define_variable(SUPER_STR);
                 }
-
                 self.push_scope();
                 self.define_variable(THIS_STR);
 
@@ -219,7 +218,7 @@ impl Resolver {
             }
             ExprType::Super(var, _) => {
                 if self.class_context != ClassContext::Subclass {
-                    return Err(ResolverError::NoSuperClass);
+                    return Err(ResolverError::SuperStatementOutsideClass);
                 }
                 self.resolve_local_variable(var);
             }

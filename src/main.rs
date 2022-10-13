@@ -2,6 +2,7 @@ use crate::treewalk::Interpreter;
 use crate::treewalk::Lexer;
 use crate::treewalk::Parser;
 use crate::treewalk::Resolver;
+
 use std::io::Write;
 use std::{env, fs, io, process};
 
@@ -22,6 +23,7 @@ fn main() {
     }
 }
 
+/// Run prompt from REPL.
 fn run_prompt() {
     let mut interpreter = Interpreter::new();
 
@@ -41,6 +43,7 @@ fn run_prompt() {
     }
 }
 
+/// Run .lox source code file.
 fn run_file(filename: &str) {
     let contents = fs::read_to_string(filename).expect("Failed to read file.");
     let mut interpreter = Interpreter::new();
@@ -62,15 +65,15 @@ fn run(interpreter: &mut Interpreter, source: &str) -> RunResult {
 
     // Run parser.
     let parser = Parser::new(tokens.into_iter());
-    let statements: Vec<_> = parser.parse();
-    let mut statements: Vec<_> = match statements.into_iter().collect() {
-        Ok(statements) => statements,
+    let stmts: Vec<_> = parser.parse();
+    let mut stmts: Vec<_> = match stmts.into_iter().collect() {
+        Ok(stmts) => stmts,
         Err(e) => return Err(format!("{:?}", e)),
     };
 
     // Run resolver.
     let mut resolver = Resolver::new();
-    for stmt in statements.iter_mut() {
+    for stmt in stmts.iter_mut() {
         match resolver.resolve_root(stmt) {
             Ok(_) => (),
             Err(e) => return Err(format!("{:?}", e)),
@@ -78,7 +81,7 @@ fn run(interpreter: &mut Interpreter, source: &str) -> RunResult {
     }
 
     // Run interpreter.
-    match interpreter.eval_statements(statements) {
+    match interpreter.eval_statements(stmts) {
         Ok(_) => Ok(()),
         Err(e) => Err(format!("{:?}", e)),
     }

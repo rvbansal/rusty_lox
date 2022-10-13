@@ -83,10 +83,9 @@ impl LoxInstanceDataPtr {
     }
 
     pub fn get(&self, name: &str) -> RuntimeResult<Object> {
-        if let Some(obj) = self.lookup_property(name) {
+        if let Some(obj) = self.find_property(name) {
             return Ok(obj);
         }
-
         if let Some(method) = self.find_bound_method(name) {
             return Ok(method);
         }
@@ -105,7 +104,7 @@ impl LoxInstanceDataPtr {
             .insert(property.to_owned(), value);
     }
 
-    fn lookup_property(&self, name: &str) -> Option<Object> {
+    fn find_property(&self, name: &str) -> Option<Object> {
         self.0.properties.borrow().get(name).cloned()
     }
 
