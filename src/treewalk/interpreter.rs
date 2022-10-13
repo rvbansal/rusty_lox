@@ -1,4 +1,4 @@
-use super::ast::{Expr, ExprType, Stmt, StmtType, VariableInfo, FuncInfo, Literal};
+use super::ast::{Expr, ExprType, FuncInfo, Literal, Stmt, StmtType, VariableInfo};
 use super::class::LoxClassDataPtr;
 use super::constants::{INIT_STR, SUPER_STR, THIS_STR};
 use super::environment::Environment;

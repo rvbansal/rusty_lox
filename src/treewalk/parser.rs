@@ -1,6 +1,6 @@
 use super::ast::{Expr, ExprType, FuncInfo, Literal, Stmt, StmtType, VariableInfo};
 use super::constants::{MAX_FUNC_ARGS, SUPER_STR, THIS_STR};
-use super::operator::{InfixOperator, LogicalOperator, PrefixOperator, Precedence};
+use super::operator::{InfixOperator, LogicalOperator, Precedence, PrefixOperator};
 use super::span::{CodePosition, Span};
 use super::token::{SpannedToken, Token};
 

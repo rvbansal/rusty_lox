@@ -1,4 +1,4 @@
-use super::ast::{Expr, ExprType, Stmt, StmtType, VariableInfo, FuncInfo};
+use super::ast::{Expr, ExprType, FuncInfo, Stmt, StmtType, VariableInfo};
 use super::constants::{INIT_STR, SUPER_STR, THIS_STR};
 use std::collections::HashMap;
 
@@ -66,7 +66,7 @@ impl Resolver {
                 if self.is_var_already_defined(name) {
                     return Err(ResolverError::LocalVarDefinedAlready(name.to_owned()));
                 }
-                
+
                 self.declare_variable(name);
                 self.resolve_expression(expr)?;
                 self.define_variable(name);
