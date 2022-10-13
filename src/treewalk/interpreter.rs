@@ -1,4 +1,4 @@
-use super::ast::{Expr, FuncInfo, Stmt, VariableInfo};
+use super::ast::{Expr, ExprType, FuncInfo, Literal, Stmt, StmtType, VariableInfo};
 use super::class::LoxClassDataPtr;
 use super::constants::{INIT_STR, SUPER_STR, THIS_STR};
 use super::environment::Environment;
@@ -9,7 +9,6 @@ use super::object::Object;
 use super::operator::{InfixOperator, LogicalOperator, PrefixOperator};
 
 use std::collections::HashMap;
-
 
 pub struct Interpreter {
     pub env: Environment,
@@ -43,33 +42,36 @@ impl Interpreter {
     }
 
     pub fn eval_statement(&mut self, stmt: &Stmt) -> RuntimeResult<()> {
-        match stmt {
-            Stmt::Expression(expr) => {
+        match &stmt.stmt {
+            StmtType::Expression(expr) => {
                 self.eval_expression(expr)?;
             }
-            Stmt::Print(expr) => {
+            StmtType::Print(expr) => {
                 println!("[out] {:?}", self.eval_expression(expr)?);
             }
-            Stmt::IfElse(if_condition, if_body, else_body) => {
+            StmtType::IfElse(if_condition, if_body, else_body) => {
                 self.eval_if_else(if_condition, if_body, else_body.as_deref())?
             }
-            Stmt::While(condition, body) => self.eval_while(condition, body)?,
-            Stmt::VariableDecl(name, expr) => {
+            StmtType::While(condition, body) => self.eval_while(condition, body)?,
+            StmtType::VariableDecl(name, expr) => {
                 let value = self.eval_expression(expr)?;
                 self.env.define(name.clone(), value);
             }
-            Stmt::Block(stmts) => self.eval_block(stmts)?,
-            Stmt::FuncDecl(func_info) => {
+            StmtType::Block(stmts) => self.eval_block(stmts)?,
+            StmtType::FuncDecl(func_info) => {
                 self.env.define(
                     func_info.name.clone(),
                     Object::LoxFunc(self.make_fn(func_info, false)),
                 );
             }
-            Stmt::Return(expr) => {
-                let value = self.eval_expression(expr)?;
+            StmtType::Return(expr) => {
+                let value = match expr {
+                    Some(expr) => self.eval_expression(expr)?,
+                    None => Object::Nil,
+                };
                 return Err(InterpreterError::Return(value));
             }
-            Stmt::ClassDecl(name, superclass_name, methods_info) => {
+            StmtType::ClassDecl(name, superclass_name, methods_info) => {
                 let superclass = match superclass_name {
                     None => None,
                     Some(class) => match self.env_var_lookup(class)? {
@@ -102,13 +104,7 @@ impl Interpreter {
     fn make_fn(&self, func_info: &FuncInfo, is_method: bool) -> LoxFn {
         let is_initializer = is_method && func_info.name == INIT_STR;
 
-        LoxFn::new(
-            func_info.name.clone(),
-            func_info.params.clone(),
-            *func_info.body.clone(),
-            is_initializer,
-            self.env.clone(),
-        )
+        LoxFn::new(func_info.clone(), is_initializer, self.env.clone())
     }
 
     pub fn eval_if_else(
@@ -156,16 +152,13 @@ impl Interpreter {
     }
 
     pub fn eval_expression(&mut self, expr: &Expr) -> RuntimeResult<Object> {
-        match expr {
-            Expr::NumberLiteral(n) => Ok(Object::Number(*n as f64)),
-            Expr::BooleanLiteral(b) => Ok(Object::Boolean(*b)),
-            Expr::StringLiteral(s) => Ok(Object::String(s.clone())),
-            Expr::NilLiteral => Ok(Object::Nil),
-            Expr::Infix(op, lhs, rhs) => self.eval_infix_operator(op, lhs, rhs),
-            Expr::Prefix(op, expr) => self.eval_prefix_operator(op, expr),
-            Expr::Logical(op, lhs, rhs) => self.eval_logical_operator(op, lhs, rhs),
-            Expr::Variable(var_info) => self.env_var_lookup(var_info),
-            Expr::Assignment(var_info, expr) => {
+        match &expr.expr {
+            ExprType::Literal(l) => Ok(self.eval_literal(l)),
+            ExprType::Infix(op, lhs, rhs) => self.eval_infix_operator(*op, lhs, rhs),
+            ExprType::Prefix(op, expr) => self.eval_prefix_operator(*op, expr),
+            ExprType::Logical(op, lhs, rhs) => self.eval_logical_operator(*op, lhs, rhs),
+            ExprType::Variable(var_info) => self.env_var_lookup(var_info),
+            ExprType::Assignment(var_info, expr) => {
                 let value = self.eval_expression(expr)?;
                 match var_info.env_hops {
                     Some(env_hops) => self.env.set_at(env_hops, &var_info.name, value.clone())?,
@@ -173,13 +166,13 @@ impl Interpreter {
                 }
                 Ok(value)
             }
-            Expr::Call(callee, args) => self.eval_func_call(callee, args),
-            Expr::Get(obj_expr, property) => self.eval_property_get(obj_expr, property),
-            Expr::Set(expr_lhs, property, expr_rhs) => {
+            ExprType::Call(callee, args) => self.eval_func_call(callee, args),
+            ExprType::Get(obj_expr, property) => self.eval_property_get(obj_expr, property),
+            ExprType::Set(expr_lhs, property, expr_rhs) => {
                 self.eval_property_set(expr_lhs, property, expr_rhs)
             }
-            Expr::This(var) => self.env_var_lookup(var),
-            Expr::Super(var, method) => {
+            ExprType::This(var) => self.env_var_lookup(var),
+            ExprType::Super(var, method) => {
                 let superclass = match self.env_var_lookup(var)? {
                     Object::LoxClass(cls) => cls,
                     _ => panic!("super is not a class"),
@@ -190,12 +183,18 @@ impl Interpreter {
                 let this = self.env.get_at(this_depth, THIS_STR).expect(err_msg);
                 match superclass.find_method(method) {
                     Some(method) => Ok(Object::LoxFunc(method.bind(this))),
-                    None => Err(InterpreterError::MissingProperty(
-                        this,
-                        method.to_owned(),
-                    )),
+                    None => Err(InterpreterError::MissingProperty(this, method.to_owned())),
                 }
             }
+        }
+    }
+
+    fn eval_literal(&self, l: &Literal) -> Object {
+        match l {
+            Literal::Number(n) => Object::Number(*n as f64),
+            Literal::Boolean(b) => Object::Boolean(*b),
+            Literal::Str(s) => Object::String(s.clone()),
+            Literal::Nil => Object::Nil,
         }
     }
 
@@ -232,7 +231,7 @@ impl Interpreter {
 
     pub fn eval_logical_operator(
         &mut self,
-        op: &LogicalOperator,
+        op: LogicalOperator,
         lhs: &Expr,
         rhs: &Expr,
     ) -> RuntimeResult<Object> {
@@ -248,49 +247,22 @@ impl Interpreter {
 
     pub fn eval_infix_operator(
         &mut self,
-        op: &InfixOperator,
+        op: InfixOperator,
         lhs: &Expr,
         rhs: &Expr,
     ) -> RuntimeResult<Object> {
         let lhs = self.eval_expression(lhs)?;
         let rhs = self.eval_expression(rhs)?;
-
-        match op {
-            InfixOperator::Add => match (lhs, rhs) {
-                (Object::Number(a), Object::Number(b)) => Ok(Object::Number(a + b)),
-                (Object::String(a), Object::String(b)) => Ok(Object::String(a + &b)),
-                (a, b) => Err(InterpreterError::IllegalInfixOperation(*op, a, b)),
-            },
-            InfixOperator::Subtract => numerical_binop(op, lhs, rhs, |a, b| Object::Number(a - b)),
-            InfixOperator::Multiply => numerical_binop(op, lhs, rhs, |a, b| Object::Number(a * b)),
-            InfixOperator::Divide => numerical_binop(op, lhs, rhs, |a, b| Object::Number(a / b)),
-            InfixOperator::EqualTo => Ok(Object::Boolean(lhs == rhs)),
-            InfixOperator::NotEqualTo => Ok(Object::Boolean(lhs != rhs)),
-            InfixOperator::GreaterEq => {
-                numerical_binop(op, lhs, rhs, |a, b| Object::Boolean(a >= b))
-            }
-            InfixOperator::GreaterThan => {
-                numerical_binop(op, lhs, rhs, |a, b| Object::Boolean(a > b))
-            }
-            InfixOperator::LessEq => numerical_binop(op, lhs, rhs, |a, b| Object::Boolean(a <= b)),
-            InfixOperator::LessThan => numerical_binop(op, lhs, rhs, |a, b| Object::Boolean(a < b)),
-        }
+        Object::apply_infix_op(op, lhs, rhs)
     }
 
     pub fn eval_prefix_operator(
         &mut self,
-        op: &PrefixOperator,
+        op: PrefixOperator,
         expr: &Expr,
     ) -> RuntimeResult<Object> {
         let value = self.eval_expression(expr)?;
-
-        match op {
-            PrefixOperator::Negate => match value {
-                Object::Number(n) => Ok(Object::Number(-n)),
-                _ => Err(InterpreterError::IllegalPrefixOperation(*op, value)),
-            },
-            PrefixOperator::LogicalNot => Ok(Object::Boolean(!value.is_truthy())),
-        }
+        Object::apply_prefix_op(op, value)
     }
 
     pub fn eval_func_call(&mut self, callee: &Expr, raw_args: &Vec<Expr>) -> RuntimeResult<Object> {
@@ -302,71 +274,5 @@ impl Interpreter {
         }
 
         callee.execute(args, self)
-    }
-}
-
-fn numerical_binop<F>(
-    op: &InfixOperator,
-    lhs: Object,
-    rhs: Object,
-    func: F,
-) -> RuntimeResult<Object>
-where
-    F: Fn(f64, f64) -> Object,
-{
-    match (lhs, rhs) {
-        (Object::Number(a), Object::Number(b)) => Ok(func(a, b)),
-        (a, b) => Err(InterpreterError::IllegalInfixOperation(*op, a, b)),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn test_eval_func(expr: &Expr) -> RuntimeResult<Object> {
-        let mut interpreter = Interpreter::new();
-        interpreter.eval_expression(expr)
-    }
-
-    #[test]
-    fn test_interpreter_infix_expr() {
-        let expr1 = Expr::Infix(
-            InfixOperator::Add,
-            Box::new(Expr::NumberLiteral(1.0)),
-            Box::new(Expr::NumberLiteral(2.0)),
-        );
-
-        let expr2 = Expr::Infix(
-            InfixOperator::Add,
-            Box::new(Expr::StringLiteral("test1".to_string())),
-            Box::new(Expr::StringLiteral("test2".to_string())),
-        );
-
-        let expr3 = Expr::Infix(
-            InfixOperator::LessEq,
-            Box::new(Expr::NumberLiteral(1.0)),
-            Box::new(Expr::NumberLiteral(0.5)),
-        );
-
-        assert_eq!(test_eval_func(&expr1), Ok(Object::Number(3.0)));
-        assert_eq!(
-            test_eval_func(&expr2),
-            Ok(Object::String("test1test2".to_string()))
-        );
-        assert_eq!(test_eval_func(&expr3), Ok(Object::Boolean(false)));
-    }
-
-    #[test]
-    fn test_interpreter_prefix_expr() {
-        let expr1 = Expr::Prefix(PrefixOperator::Negate, Box::new(Expr::NumberLiteral(2.0)));
-
-        let expr2 = Expr::Prefix(
-            PrefixOperator::LogicalNot,
-            Box::new(Expr::BooleanLiteral(false)),
-        );
-
-        assert_eq!(test_eval_func(&expr1), Ok(Object::Number(-2.0)));
-        assert_eq!(test_eval_func(&expr2), Ok(Object::Boolean(true)));
     }
 }

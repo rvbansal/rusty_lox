@@ -1,4 +1,4 @@
-use super::ast::{Expr, FuncInfo, Stmt, VariableInfo};
+use super::ast::{Expr, ExprType, FuncInfo, Stmt, StmtType, VariableInfo};
 use super::constants::{INIT_STR, SUPER_STR, THIS_STR};
 use std::collections::HashMap;
 
@@ -59,10 +59,10 @@ impl Resolver {
     }
 
     fn resolve_statement(&mut self, stmt: &mut Stmt) -> ResolverResult<()> {
-        match stmt {
-            Stmt::Expression(expr) => self.resolve_expression(expr)?,
-            Stmt::Print(expr) => self.resolve_expression(expr)?,
-            Stmt::VariableDecl(name, expr) => {
+        match &mut stmt.stmt {
+            StmtType::Expression(expr) => self.resolve_expression(expr)?,
+            StmtType::Print(expr) => self.resolve_expression(expr)?,
+            StmtType::VariableDecl(name, expr) => {
                 if self.is_var_already_defined(name) {
                     return Err(ResolverError::LocalVarDefinedAlready(name.to_owned()));
                 }
@@ -71,14 +71,14 @@ impl Resolver {
                 self.resolve_expression(expr)?;
                 self.define_variable(name);
             }
-            Stmt::Block(stmts) => {
+            StmtType::Block(stmts) => {
                 self.push_scope();
                 for stmt in stmts.iter_mut() {
                     self.resolve_statement(stmt)?;
                 }
                 self.pop_scope();
             }
-            Stmt::IfElse(cond, if_body, else_body) => {
+            StmtType::IfElse(cond, if_body, else_body) => {
                 self.resolve_expression(cond)?;
                 self.resolve_statement(if_body)?;
 
@@ -86,21 +86,25 @@ impl Resolver {
                     self.resolve_statement(else_body)?;
                 }
             }
-            Stmt::While(cond, body) => {
+            StmtType::While(cond, body) => {
                 self.resolve_expression(cond)?;
                 self.resolve_statement(body)?;
             }
-            Stmt::FuncDecl(func_info) => self.resolve_function(func_info, FuncContext::Function)?,
-            Stmt::Return(expr) => {
+            StmtType::FuncDecl(func_info) => {
+                self.resolve_function(func_info, FuncContext::Function)?
+            }
+            StmtType::Return(expr) => {
                 if self.func_context == FuncContext::Global {
                     return Err(ResolverError::ReturnStatementInGlobal);
                 }
-                if self.func_context == FuncContext::Initializer && *expr != Expr::NilLiteral {
+                if self.func_context == FuncContext::Initializer && expr.is_some() {
                     return Err(ResolverError::ReturnInInitializer);
                 }
-                self.resolve_expression(expr)?;
+                if let Some(expr) = expr {
+                    self.resolve_expression(expr)?;
+                }
             }
-            Stmt::ClassDecl(name, superclass, methods) => {
+            StmtType::ClassDecl(name, superclass, methods) => {
                 self.define_variable(name);
 
                 if let Some(superclass) = superclass {
@@ -171,21 +175,18 @@ impl Resolver {
     }
 
     fn resolve_expression(&mut self, expr: &mut Expr) -> ResolverResult<()> {
-        match expr {
-            Expr::NumberLiteral(_)
-            | Expr::BooleanLiteral(_)
-            | Expr::StringLiteral(_)
-            | Expr::NilLiteral => (),
-            Expr::Infix(_, lhs, rhs) => {
+        match &mut expr.expr {
+            ExprType::Literal(_) => (),
+            ExprType::Infix(_, lhs, rhs) => {
                 self.resolve_expression(lhs)?;
                 self.resolve_expression(rhs)?;
             }
-            Expr::Prefix(_, expr) => self.resolve_expression(expr)?,
-            Expr::Logical(_, lhs, rhs) => {
+            ExprType::Prefix(_, expr) => self.resolve_expression(expr)?,
+            ExprType::Logical(_, lhs, rhs) => {
                 self.resolve_expression(lhs)?;
                 self.resolve_expression(rhs)?;
             }
-            Expr::Variable(var_info) => {
+            ExprType::Variable(var_info) => {
                 if self.is_during_var_initialization(&var_info.name) {
                     return Err(ResolverError::UseVarInInitialization(
                         var_info.name.to_owned(),
@@ -193,30 +194,30 @@ impl Resolver {
                 }
                 self.resolve_local_variable(var_info);
             }
-            Expr::Assignment(var_info, expr) => {
+            ExprType::Assignment(var_info, expr) => {
                 self.resolve_expression(expr)?;
                 self.resolve_local_variable(var_info);
             }
-            Expr::Call(callee, args) => {
+            ExprType::Call(callee, args) => {
                 self.resolve_expression(callee)?;
                 for arg in args.iter_mut() {
                     self.resolve_expression(arg)?;
                 }
             }
-            Expr::Get(expr_obj, _property) => {
+            ExprType::Get(expr_obj, _property) => {
                 self.resolve_expression(expr_obj)?;
             }
-            Expr::Set(expr_lhs, _property, expr_rhs) => {
+            ExprType::Set(expr_lhs, _property, expr_rhs) => {
                 self.resolve_expression(expr_lhs)?;
                 self.resolve_expression(expr_rhs)?;
             }
-            Expr::This(var) => {
+            ExprType::This(var) => {
                 if self.class_context == ClassContext::Global {
                     return Err(ResolverError::ReferencetoThisOutsideOfClass);
                 }
                 self.resolve_local_variable(var);
             }
-            Expr::Super(var, _) => {
+            ExprType::Super(var, _) => {
                 if self.class_context != ClassContext::Subclass {
                     return Err(ResolverError::NoSuperClass);
                 }

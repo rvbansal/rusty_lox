@@ -1,7 +1,7 @@
-use super::ast::{Expr, FuncInfo, Stmt, VariableInfo};
+use super::ast::{Expr, ExprType, FuncInfo, Literal, Stmt, StmtType, VariableInfo};
 use super::constants::{MAX_FUNC_ARGS, SUPER_STR, THIS_STR};
 use super::operator::{InfixOperator, LogicalOperator, Precedence, PrefixOperator};
-use super::span::CodePosition;
+use super::span::{CodePosition, Span};
 use super::token::{SpannedToken, Token};
 
 use std::iter::Peekable;
@@ -11,6 +11,7 @@ where
     T: Iterator<Item = SpannedToken>,
 {
     tokens: Peekable<T>,
+    prev_span: Span,
 }
 
 #[derive(Debug)]
@@ -31,6 +32,7 @@ where
     pub fn new(tokens: T) -> Self {
         Parser {
             tokens: tokens.peekable(),
+            prev_span: Span::default(),
         }
     }
 
@@ -45,9 +47,17 @@ where
     /// Returns current token and advances stream.
     fn take_token(&mut self) -> SpannedToken {
         match self.tokens.next() {
-            Some(t) => t,
+            Some(t) => {
+                self.prev_span = t.span;
+                t
+            }
             None => panic!("Went beyond EOF."),
         }
+    }
+
+    // Returns current span.
+    fn current_span(&mut self) -> Span {
+        self.peek_token().span
     }
 
     /// Advances the stream, erroring if we're at end of file.
@@ -75,12 +85,16 @@ where
     /// Checks whether or not the current token matches the given token.
     /// If true consume it, else return Error.
     fn consume(&mut self, t: Token) -> ParserResult<()> {
-        let (token, span) = self.take_token().split();
+        let token = self.take_token();
 
-        if token == t {
+        if token.token == t {
             Ok(())
         } else {
-            Err(ParserError::ExpectedTokenAt(t, span.start_pos, token))
+            Err(ParserError::ExpectedTokenAt(
+                t,
+                token.span.start_pos,
+                token.token,
+            ))
         }
     }
 
@@ -99,24 +113,31 @@ where
     /// Handle variable declations separately from non-declaring statements
     /// since they may not be allowed everywhere non-declaring statements are allowed.
     fn parse_declaration(&mut self) -> ParserResult<Stmt> {
-        let (token, _) = self.peek_token().split();
+        let token = self.peek_token();
+        let span_start = token.span;
 
-        match token {
+        match token.token {
             Token::Var => {
                 self.bump();
                 let name = self.parse_identifier()?;
                 let expr = if self.check_consume(Token::Equals) {
                     self.parse_expression()?
                 } else {
-                    Expr::NilLiteral
+                    to_expr(from_literal(Literal::Nil), Span::default())
                 };
                 self.consume(Token::Semicolon)?;
 
-                Ok(Stmt::VariableDecl(name, expr))
+                Ok(to_stmt(
+                    StmtType::VariableDecl(name, expr),
+                    span_start.unite(self.prev_span),
+                ))
             }
             Token::Fun => {
                 let func_info = self.parse_func_info(false)?;
-                Ok(Stmt::FuncDecl(func_info))
+                Ok(to_stmt(
+                    StmtType::FuncDecl(func_info),
+                    span_start.unite(self.prev_span),
+                ))
             }
             Token::Class => self.parse_class_decl(),
             _ => self.parse_statement(),
@@ -137,14 +158,18 @@ where
 
     /// Parse print and expression statements.
     fn parse_statement(&mut self) -> ParserResult<Stmt> {
-        let (token, _) = self.peek_token().split();
+        let token = self.peek_token();
+        let span_start = token.span;
 
-        match token {
+        match token.token {
             Token::Print => {
                 self.bump();
                 let expr = self.parse_expression()?;
                 self.consume(Token::Semicolon)?;
-                Ok(Stmt::Print(expr))
+                Ok(to_stmt(
+                    StmtType::Print(expr),
+                    span_start.unite(self.prev_span),
+                ))
             }
             Token::If => self.parse_if_else(),
             Token::While => self.parse_while(),
@@ -154,20 +179,28 @@ where
             _ => {
                 let expr = self.parse_expression()?;
                 self.consume(Token::Semicolon)?;
-                Ok(Stmt::Expression(expr))
+                Ok(to_stmt(
+                    StmtType::Expression(expr),
+                    span_start.unite(self.prev_span),
+                ))
             }
         }
     }
 
     fn parse_return_statement(&mut self) -> ParserResult<Stmt> {
+        let span_start = self.current_span();
+
         self.consume(Token::Return)?;
         let expr = if !self.check(Token::Semicolon) {
-            self.parse_expression()?
+            Some(self.parse_expression()?)
         } else {
-            Expr::NilLiteral
+            None
         };
         self.consume(Token::Semicolon)?;
-        Ok(Stmt::Return(expr))
+        Ok(to_stmt(
+            StmtType::Return(expr),
+            span_start.unite(self.prev_span),
+        ))
     }
 
     fn parse_func_params(&mut self) -> ParserResult<Vec<String>> {
@@ -186,7 +219,7 @@ where
         }
 
         if args.len() >= MAX_FUNC_ARGS {
-            let span = self.peek_token().span;
+            let span = self.current_span();
             return Err(ParserError::TooManyArgsAt(span.start_pos));
         }
 
@@ -195,6 +228,8 @@ where
 
     /// Parse class declaration.
     fn parse_class_decl(&mut self) -> ParserResult<Stmt> {
+        let span_start = self.current_span();
+
         self.consume(Token::Class)?;
         let name = self.parse_identifier()?;
 
@@ -212,11 +247,16 @@ where
             methods.push(method_info);
         }
 
-        Ok(Stmt::ClassDecl(name, superclass, methods))
+        Ok(to_stmt(
+            StmtType::ClassDecl(name, superclass, methods),
+            span_start.unite(self.prev_span),
+        ))
     }
 
     /// Parse if else.
     fn parse_if_else(&mut self) -> ParserResult<Stmt> {
+        let span_start = self.current_span();
+
         self.consume(Token::If)?;
         self.consume(Token::LeftParen)?;
         let condition = self.parse_expression()?;
@@ -228,26 +268,32 @@ where
             None
         };
 
-        Ok(Stmt::IfElse(
-            condition,
-            if_triggered_body,
-            else_triggered_body,
+        Ok(to_stmt(
+            StmtType::IfElse(condition, if_triggered_body, else_triggered_body),
+            span_start.unite(self.prev_span),
         ))
     }
 
     /// Parse while.
     fn parse_while(&mut self) -> ParserResult<Stmt> {
+        let span_start = self.current_span();
+
         self.consume(Token::While)?;
         self.consume(Token::LeftParen)?;
         let condition = self.parse_expression()?;
         self.consume(Token::RightParen)?;
         let triggered_body = self.parse_statement()?;
 
-        Ok(Stmt::While(condition, Box::new(triggered_body)))
+        Ok(to_stmt(
+            StmtType::While(condition, Box::new(triggered_body)),
+            span_start.unite(self.prev_span),
+        ))
     }
 
     /// Parse for loop.
     fn parse_for(&mut self) -> ParserResult<Stmt> {
+        let span_start = self.current_span();
+
         self.consume(Token::For)?;
         self.consume(Token::LeftParen)?;
 
@@ -257,14 +303,18 @@ where
         } else if self.check(Token::Var) {
             Some(self.parse_declaration()?)
         } else {
+            let span_start = self.current_span();
             let expr = self.parse_expression()?;
             self.consume(Token::Semicolon)?;
-            Some(Stmt::Expression(expr))
+            Some(to_stmt(
+                StmtType::Expression(expr),
+                span_start.unite(self.prev_span),
+            ))
         };
 
         // Get running condition. It can be empty.
         let running_condition = if self.check_consume(Token::Semicolon) {
-            Expr::BooleanLiteral(true)
+            to_expr(from_literal(Literal::Boolean(true)), Span::default())
         } else {
             self.parse_expression()?
         };
@@ -282,13 +332,19 @@ where
 
         // Treat the increment as part of the body.
         if let Some(increment) = increment {
-            body = Stmt::Block(vec![body, Stmt::Expression(increment)]);
+            let increment_smt = to_stmt(StmtType::Expression(increment), Span::default());
+            body = to_stmt(StmtType::Block(vec![body, increment_smt]), Span::default())
         }
-        body = Stmt::While(running_condition, Box::new(body));
-
+        body = to_stmt(
+            StmtType::While(running_condition, Box::new(body)),
+            Span::default(),
+        );
         // Add the initial condition if it exists prior to the body.
         if let Some(initial_condition) = initial_condition {
-            body = Stmt::Block(vec![initial_condition, body]);
+            body = to_stmt(
+                StmtType::Block(vec![initial_condition, body]),
+                span_start.unite(self.prev_span),
+            );
         }
 
         Ok(body)
@@ -296,6 +352,8 @@ where
 
     /// Parse a block of statements.
     fn parse_block(&mut self) -> ParserResult<Stmt> {
+        let span_start = self.current_span();
+
         let mut stmts = vec![];
 
         self.consume(Token::LeftBrace)?;
@@ -303,14 +361,17 @@ where
             stmts.push(self.parse_declaration()?);
         }
 
-        Ok(Stmt::Block(stmts))
+        Ok(to_stmt(
+            StmtType::Block(stmts),
+            span_start.unite(self.prev_span),
+        ))
     }
 
     fn parse_identifier(&mut self) -> ParserResult<String> {
-        let (token, span) = self.take_token().split();
-        match token {
+        let token = self.take_token();
+        match token.token {
             Token::Identifier(name) => Ok(name),
-            _ => Err(ParserError::ExpectedIdentifierAt(span.start_pos)),
+            _ => Err(ParserError::ExpectedIdentifierAt(token.span.start_pos)),
         }
     }
 
@@ -330,7 +391,7 @@ where
         }
 
         if args.len() >= MAX_FUNC_ARGS {
-            let span = self.peek_token().span;
+            let span = self.current_span();
             return Err(ParserError::TooManyArgsAt(span.start_pos));
         }
 
@@ -342,45 +403,24 @@ where
     }
 
     pub fn run_pratt_parse_algo(&mut self, min_precedence: Precedence) -> ParserResult<Expr> {
-        let (token, span) = self.take_token().split();
+        let SpannedToken { token, span } = self.peek_token();
 
         // Start by parsing literals or prefixes.
-        let mut lhs = match token {
-            // Literals
-            Token::Number(n) => Expr::NumberLiteral(n),
-            Token::True => Expr::BooleanLiteral(true),
-            Token::False => Expr::BooleanLiteral(false),
-            Token::String(s) => Expr::StringLiteral(s),
-            Token::Nil => Expr::NilLiteral,
-            Token::Identifier(name) => Expr::Variable(VariableInfo::new(name)),
-            Token::This => Expr::This(VariableInfo::new(THIS_STR.to_owned())),
-            Token::Super => {
-                let var = VariableInfo::new(SUPER_STR.to_owned());
-                self.consume(Token::Dot)?;
-                let method = self.parse_identifier()?;
-                Expr::Super(var, method)
+        let mut lhs = match PrefixOperator::from_token(&token) {
+            Some(op) => {
+                self.bump();
+                let expr = self.run_pratt_parse_algo(op.precedence())?;
+                to_expr(
+                    ExprType::Prefix(op, Box::new(expr)),
+                    span.unite(self.prev_span),
+                )
             }
-            // Parentheses
-            Token::LeftParen => {
-                let expr = self.parse_expression()?;
-                self.consume(Token::RightParen)?;
-                expr
-            }
-
-            // Prefix operator
-            t => match PrefixOperator::from_token(&t) {
-                Some(op) => {
-                    let expr = self.run_pratt_parse_algo(op.precedence())?;
-                    Expr::Prefix(op, Box::new(expr))
-                }
-                None => return Err(ParserError::ExpectedExprAt(span.start_pos, t)),
-            },
+            None => self.parse_primary()?,
         };
 
         // Recursively handle any infixes with same or higher precedence.
         loop {
-            let (token, span) = self.peek_token().split();
-            let span = span.to_owned();
+            let token = self.peek_token().token;
 
             // Standard infix
             if let Some(op) = InfixOperator::from_token(&token) {
@@ -388,8 +428,10 @@ where
                     break;
                 }
                 self.bump();
+
                 let rhs = self.run_pratt_parse_algo(op.precedence())?;
-                lhs = Expr::Infix(op, Box::new(lhs), Box::new(rhs));
+                let new_span = lhs.span.unite(rhs.span);
+                lhs = to_expr(ExprType::Infix(op, Box::new(lhs), Box::new(rhs)), new_span);
                 continue;
             }
 
@@ -398,10 +440,14 @@ where
                 if op.precedence() <= min_precedence {
                     break;
                 }
-
                 self.bump();
+
                 let rhs = self.run_pratt_parse_algo(op.precedence())?;
-                lhs = Expr::Logical(op, Box::new(lhs), Box::new(rhs));
+                let new_span = lhs.span.unite(rhs.span);
+                lhs = to_expr(
+                    ExprType::Logical(op, Box::new(lhs), Box::new(rhs)),
+                    new_span,
+                );
                 continue;
             }
 
@@ -413,16 +459,18 @@ where
 
                 self.bump();
                 let rhs = self.run_pratt_parse_algo(Precedence::Assignment)?;
+                let new_span = lhs.span.unite(rhs.span);
                 let rhs_box = Box::new(rhs);
 
-                lhs = match lhs {
-                    Expr::Variable(var_info) => {
-                        Expr::Assignment(VariableInfo::new(var_info.name), rhs_box)
+                let new_expr = match lhs.expr {
+                    ExprType::Variable(var_info) => {
+                        ExprType::Assignment(VariableInfo::new(var_info.name), rhs_box)
                     }
-                    Expr::Get(expr, property) => Expr::Set(expr, property, rhs_box),
+                    ExprType::Get(expr, property) => ExprType::Set(expr, property, rhs_box),
                     _ => return Err(ParserError::ExpectedLValueAt(span.start_pos)),
                 };
 
+                lhs = to_expr(new_expr, new_span);
                 continue;
             }
 
@@ -435,7 +483,8 @@ where
                 self.bump();
 
                 let rhs = self.parse_identifier()?;
-                lhs = Expr::Get(Box::new(lhs), rhs);
+                let span = lhs.span.unite(self.prev_span);
+                lhs = to_expr(ExprType::Get(Box::new(lhs), rhs), span);
                 continue;
             }
 
@@ -446,7 +495,8 @@ where
                 }
 
                 let args = self.parse_fn_args()?;
-                lhs = Expr::Call(Box::new(lhs), args);
+                let span = lhs.span.unite(self.prev_span);
+                lhs = to_expr(ExprType::Call(Box::new(lhs), args), span);
                 continue;
             }
 
@@ -455,68 +505,45 @@ where
 
         Ok(lhs)
     }
+
+    fn parse_primary(&mut self) -> ParserResult<Expr> {
+        let token = self.take_token();
+        let span = token.span;
+
+        let expr = match token.token {
+            Token::Number(n) => from_literal(Literal::Number(n)),
+            Token::True => from_literal(Literal::Boolean(true)),
+            Token::False => from_literal(Literal::Boolean(false)),
+            Token::String(s) => from_literal(Literal::Str(s)),
+            Token::Nil => from_literal(Literal::Nil),
+            Token::Identifier(name) => ExprType::Variable(VariableInfo::new(name)),
+            Token::This => ExprType::This(VariableInfo::new(THIS_STR.to_owned())),
+            Token::Super => {
+                let var = VariableInfo::new(SUPER_STR.to_owned());
+                self.consume(Token::Dot)?;
+                let method = self.parse_identifier()?;
+                ExprType::Super(var, method)
+            }
+            Token::LeftParen => {
+                let sub_expr = self.parse_expression()?;
+                self.consume(Token::RightParen)?;
+                return Ok(sub_expr);
+            }
+            t => return Err(ParserError::ExpectedExprAt(span.start_pos, t)),
+        };
+
+        Ok(to_expr(expr, span.unite(self.prev_span)))
+    }
 }
 
-#[cfg(test)]
-mod tests {
+fn from_literal(l: Literal) -> ExprType {
+    ExprType::Literal(l)
+}
 
-    use super::*;
-    use crate::treewalk::ast::Expr;
-    use crate::treewalk::token::SpannedToken;
-    use crate::treewalk::Lexer;
+fn to_stmt(stmt: StmtType, span: Span) -> Stmt {
+    Stmt::new(stmt, span)
+}
 
-    fn get_lexed_source(source: &str) -> Vec<SpannedToken> {
-        let lexer = Lexer::new(source);
-        lexer.iter().map(|r| r.unwrap()).collect()
-    }
-
-    #[test]
-    fn test_parser() {
-        fn test_parse_func(source: &str) -> Expr {
-            let mut parser = Parser::new(get_lexed_source(source).into_iter());
-            parser.parse_expression().unwrap()
-        }
-
-        assert_eq!(
-            test_parse_func("99 + 49"),
-            Expr::Infix(
-                InfixOperator::Add,
-                Box::new(Expr::NumberLiteral(99.0)),
-                Box::new(Expr::NumberLiteral(49.0)),
-            )
-        );
-
-        assert_eq!(
-            test_parse_func("3 + 99 * 20 - 5"),
-            Expr::Infix(
-                InfixOperator::Subtract,
-                Box::new(Expr::Infix(
-                    InfixOperator::Add,
-                    Box::new(Expr::NumberLiteral(3.0)),
-                    Box::new(Expr::Infix(
-                        InfixOperator::Multiply,
-                        Box::new(Expr::NumberLiteral(99.0)),
-                        Box::new(Expr::NumberLiteral(20.0)),
-                    ))
-                )),
-                Box::new(Expr::NumberLiteral(5.0))
-            )
-        );
-
-        assert_eq!(
-            test_parse_func("-3 * (110 + 220)"),
-            Expr::Infix(
-                InfixOperator::Multiply,
-                Box::new(Expr::Prefix(
-                    PrefixOperator::Negate,
-                    Box::new(Expr::NumberLiteral(3.0)),
-                )),
-                Box::new(Expr::Infix(
-                    InfixOperator::Add,
-                    Box::new(Expr::NumberLiteral(110.0)),
-                    Box::new(Expr::NumberLiteral(220.0)),
-                ))
-            )
-        );
-    }
+fn to_expr(expr: ExprType, span: Span) -> Expr {
+    Expr::new(expr, span)
 }

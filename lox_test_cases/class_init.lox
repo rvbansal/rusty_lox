@@ -7,8 +7,6 @@ class Foo {
 var foo = Foo();
 print foo.init();
 
-
-
 class Foo2 {
   init(x, y) {
     this.x = x;

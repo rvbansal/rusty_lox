@@ -3,6 +3,7 @@ use super::errors::{InterpreterError, RuntimeResult};
 use super::function::LoxFn;
 use super::interpreter::Interpreter;
 use super::native_function::NativeFn;
+use super::operator::{InfixOperator, PrefixOperator};
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum Object {
@@ -32,5 +33,57 @@ impl Object {
             Object::LoxClass(class) => class.execute(args, interpreter),
             _ => Err(InterpreterError::NotCallable(self.clone())),
         }
+    }
+
+    pub fn apply_infix_op(op: InfixOperator, lhs: Object, rhs: Object) -> RuntimeResult<Object> {
+        match op {
+            InfixOperator::Add => match (lhs, rhs) {
+                (Object::Number(a), Object::Number(b)) => Ok(Object::Number(a + b)),
+                (Object::String(a), Object::String(b)) => Ok(Object::String(a + &b)),
+                (a, b) => Err(InterpreterError::IllegalInfixOperation(op, a, b)),
+            },
+            InfixOperator::Subtract => numerical_binop(op, lhs, rhs, |a, b| Object::Number(a - b)),
+            InfixOperator::Multiply => numerical_binop(op, lhs, rhs, |a, b| Object::Number(a * b)),
+            InfixOperator::Divide => match (lhs, rhs) {
+                (Object::Number(a), Object::Number(b)) => {
+                    if b != 0.0 {
+                        Ok(Object::Number(a / b))
+                    } else {
+                        Err(InterpreterError::DivideByZero)
+                    }
+                }
+                (lhs, rhs) => Err(InterpreterError::IllegalInfixOperation(op, lhs, rhs)),
+            },
+            InfixOperator::EqualTo => Ok(Object::Boolean(lhs == rhs)),
+            InfixOperator::NotEqualTo => Ok(Object::Boolean(lhs != rhs)),
+            InfixOperator::GreaterEq => {
+                numerical_binop(op, lhs, rhs, |a, b| Object::Boolean(a >= b))
+            }
+            InfixOperator::GreaterThan => {
+                numerical_binop(op, lhs, rhs, |a, b| Object::Boolean(a > b))
+            }
+            InfixOperator::LessEq => numerical_binop(op, lhs, rhs, |a, b| Object::Boolean(a <= b)),
+            InfixOperator::LessThan => numerical_binop(op, lhs, rhs, |a, b| Object::Boolean(a < b)),
+        }
+    }
+
+    pub fn apply_prefix_op(op: PrefixOperator, value: Object) -> RuntimeResult<Object> {
+        match op {
+            PrefixOperator::Negate => match value {
+                Object::Number(n) => Ok(Object::Number(-n)),
+                _ => Err(InterpreterError::IllegalPrefixOperation(op, value)),
+            },
+            PrefixOperator::LogicalNot => Ok(Object::Boolean(!value.is_truthy())),
+        }
+    }
+}
+
+fn numerical_binop<F>(op: InfixOperator, lhs: Object, rhs: Object, func: F) -> RuntimeResult<Object>
+where
+    F: Fn(f64, f64) -> Object,
+{
+    match (lhs, rhs) {
+        (Object::Number(a), Object::Number(b)) => Ok(func(a, b)),
+        (a, b) => Err(InterpreterError::IllegalInfixOperation(op, a, b)),
     }
 }

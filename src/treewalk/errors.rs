@@ -11,6 +11,7 @@ pub enum InterpreterError {
     MissingProperty(Object, String),
     NotAnInstance(Object),
     NotAClass(Object),
+    DivideByZero,
     // We want to unwind the call stack at a return statement, so
     // it functions much like an error.
     Return(Object),
