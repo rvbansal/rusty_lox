@@ -1,4 +1,2 @@
-var y = clock();
-print y;
-var z = clock();
-print z;
+var clock_time = clock();
+print clock_time;

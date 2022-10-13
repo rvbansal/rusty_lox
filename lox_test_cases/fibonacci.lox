@@ -1,3 +1,4 @@
+print "iterative";
 var a = 0;
 var temp;
 
@@ -6,6 +7,8 @@ for (var b = 1; a < 10000; b = temp + b) {
   temp = a;
   a = b;
 }
+
+print "recursive";
 
 fun fib(n) {
   if (n <= 1) return n;

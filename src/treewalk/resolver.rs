@@ -121,7 +121,7 @@ impl Resolver {
                 self.push_scope();
                 self.define_variable(THIS_STR);
 
-                let prev_context = self.class_context;
+                let prev_class_context = self.class_context;
                 self.class_context = if superclass.is_some() {
                     ClassContext::Subclass
                 } else {
@@ -129,15 +129,15 @@ impl Resolver {
                 };
 
                 for method in methods.iter_mut() {
-                    let context = if method.name == INIT_STR {
+                    let func_context = if method.name == INIT_STR {
                         FuncContext::Initializer
                     } else {
                         FuncContext::Method
                     };
-                    self.resolve_function(method, context)?;
+                    self.resolve_function(method, func_context)?;
                 }
 
-                self.class_context = prev_context;
+                self.class_context = prev_class_context;
                 self.pop_scope();
                 if superclass.is_some() {
                     self.pop_scope();
