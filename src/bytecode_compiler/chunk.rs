@@ -57,6 +57,7 @@ impl Chunk {
             print!("   | ");
         };
 
+        // Print opcode and operands
         let byte_value = self.code[offset];
         let opcode = match OpCode::try_from(byte_value) {
             Ok(opcode) => opcode,

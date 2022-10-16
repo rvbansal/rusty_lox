@@ -2,6 +2,8 @@ use crate::treewalk::Interpreter;
 use crate::treewalk::Lexer;
 use crate::treewalk::Parser;
 use crate::treewalk::Resolver;
+use bytecode_compiler::chunk::Chunk;
+use bytecode_compiler::opcode::OpCode;
 
 use std::io::Write;
 use std::{env, fs, io, process};
@@ -12,9 +14,6 @@ mod treewalk;
 type RunResult = Result<(), String>;
 
 fn main() {
-    use bytecode_compiler::chunk::Chunk;
-    use bytecode_compiler::opcode::OpCode;
-
     let mut chunk = Chunk::new();
 
     let index = chunk.add_constant(99.0);
