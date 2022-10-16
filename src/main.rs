@@ -6,11 +6,25 @@ use crate::treewalk::Resolver;
 use std::io::Write;
 use std::{env, fs, io, process};
 
+mod bytecode_compiler;
 mod treewalk;
 
 type RunResult = Result<(), String>;
 
 fn main() {
+    use bytecode_compiler::chunk::Chunk;
+    use bytecode_compiler::opcode::OpCode;
+
+    let mut chunk = Chunk::new();
+
+    let index = chunk.add_constant(99.0);
+    chunk.write_instruction(OpCode::Constant, 1);
+    chunk.write_byte(index, 1);
+    chunk.write_instruction(OpCode::Return, 1);
+    chunk.disassemble("Trial chunk.")
+}
+
+fn main_treewalk() {
     let args: Vec<String> = env::args().collect();
 
     match args.len() {
