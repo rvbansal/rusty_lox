@@ -1,10 +1,6 @@
-use crate::bytecode_vm::Chunk;
-use crate::bytecode_vm::OpCode;
-use crate::bytecode_vm::VM;
-use crate::lox_frontend::Lexer;
-use crate::lox_frontend::Parser;
-use crate::treewalk_interpreter::Interpreter;
-use crate::treewalk_interpreter::Resolver;
+use crate::bytecode_vm::{Chunk, Compiler, VM};
+use crate::lox_frontend::{Lexer, Parser};
+use crate::treewalk_interpreter::{Interpreter, Resolver};
 
 mod bytecode_vm;
 mod lox_frontend;
@@ -15,35 +11,9 @@ use std::{env, fs, io, process};
 
 type RunResult = Result<(), String>;
 
+const USE_BYTECODE_VM: bool = true;
+
 fn main() {
-    let mut chunk = Chunk::new();
-
-    let c1_idx = chunk.add_constant(99.0);
-    chunk.write_instruction(OpCode::Constant, 876);
-    chunk.write_byte(c1_idx, 876);
-
-    let c2_idx = chunk.add_constant(3.0);
-    chunk.write_instruction(OpCode::Constant, 876);
-    chunk.write_byte(c2_idx, 876);
-
-    chunk.write_instruction(OpCode::Add, 876);
-
-    let c3_idx = chunk.add_constant(2.0);
-    chunk.write_instruction(OpCode::Constant, 876);
-    chunk.write_byte(c3_idx, 876);
-
-    chunk.write_instruction(OpCode::Divide, 876);
-    chunk.write_instruction(OpCode::Negate, 876);
-
-    chunk.write_instruction(OpCode::Return, 876);
-
-    match VM::new().interpret(&chunk) {
-        Ok(_) => (),
-        Err(e) => println!("Error: {:?}", e),
-    }
-}
-
-fn main_treewalk() {
     let args: Vec<String> = env::args().collect();
 
     match args.len() {
@@ -104,19 +74,30 @@ fn run(interpreter: &mut Interpreter, source: &str) -> RunResult {
         Err(e) => return Err(format!("{:?}", e)),
     };
 
-    // Run resolver.
-    let mut resolver = Resolver::new();
-    for stmt in stmts.iter_mut() {
-        match resolver.resolve_root(stmt) {
-            Ok(_) => (),
-            Err(e) => return Err(format!("{:?}", e)),
-        }
-    }
+    if USE_BYTECODE_VM {
+        let mut bytecode = Chunk::new();
+        Compiler::compile(&stmts[0], &mut bytecode);
 
-    // Run interpreter.
-    match interpreter.eval_statements(stmts) {
-        Ok(_) => Ok(()),
-        Err(e) => Err(format!("{:?}", e)),
+        let mut vm = VM::new();
+        match vm.interpret(&bytecode) {
+            Ok(_) => Ok(()),
+            Err(e) => Err(format!("{:?}", e)),
+        }
+    } else {
+        // Run resolver.
+        let mut resolver = Resolver::new();
+        for stmt in stmts.iter_mut() {
+            match resolver.resolve_root(stmt) {
+                Ok(_) => (),
+                Err(e) => return Err(format!("{:?}", e)),
+            }
+        }
+
+        // Run interpreter.
+        match interpreter.eval_statements(stmts) {
+            Ok(_) => Ok(()),
+            Err(e) => Err(format!("{:?}", e)),
+        }
     }
 }
 
