@@ -1,5 +1,5 @@
-use super::ast::{Expr, ExprType, FuncInfo, Stmt, StmtType, VariableInfo};
-use super::constants::{INIT_STR, SUPER_STR, THIS_STR};
+use crate::lox_frontend::constants::{INIT_STR, SUPER_STR, THIS_STR};
+use crate::lox_frontend::grammar::{Expr, ExprType, FuncInfo, Stmt, StmtType, VariableInfo};
 use std::collections::HashMap;
 
 type Scope = HashMap<String, VariableState>;

@@ -1,9 +1,9 @@
-use super::ast::FuncInfo;
-use super::constants::THIS_STR;
 use super::environment::Environment;
 use super::errors::{InterpreterError, RuntimeResult};
 use super::interpreter::Interpreter;
 use super::object::Object;
+use crate::lox_frontend::constants::THIS_STR;
+use crate::lox_frontend::grammar::FuncInfo;
 
 use std::fmt;
 use std::rc::Rc;

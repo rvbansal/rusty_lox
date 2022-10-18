@@ -1,12 +1,14 @@
-use super::ast::{Expr, ExprType, FuncInfo, Literal, Stmt, StmtType, VariableInfo};
 use super::class::LoxClassDataPtr;
-use super::constants::{INIT_STR, SUPER_STR, THIS_STR};
 use super::environment::Environment;
 use super::errors::{InterpreterError, RuntimeResult};
 use super::function::LoxFn;
 use super::native_function::get_native_funcs;
 use super::object::Object;
-use super::operator::{InfixOperator, LogicalOperator, PrefixOperator};
+use crate::lox_frontend::constants::{INIT_STR, SUPER_STR, THIS_STR};
+use crate::lox_frontend::grammar::{
+    Expr, ExprType, FuncInfo, Literal, Stmt, StmtType, VariableInfo,
+};
+use crate::lox_frontend::operator::{InfixOperator, LogicalOperator, PrefixOperator};
 
 use std::collections::HashMap;
 

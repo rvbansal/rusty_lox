@@ -1,16 +1,17 @@
-use crate::treewalk::Interpreter;
-use crate::treewalk::Lexer;
-use crate::treewalk::Parser;
-use crate::treewalk::Resolver;
-use bytecode_compiler::Chunk;
-use bytecode_compiler::OpCode;
-use bytecode_compiler::VM;
+use crate::bytecode_vm::Chunk;
+use crate::bytecode_vm::OpCode;
+use crate::bytecode_vm::VM;
+use crate::lox_frontend::Lexer;
+use crate::lox_frontend::Parser;
+use crate::treewalk_interpreter::Interpreter;
+use crate::treewalk_interpreter::Resolver;
+
+mod bytecode_vm;
+mod lox_frontend;
+mod treewalk_interpreter;
 
 use std::io::Write;
 use std::{env, fs, io, process};
-
-mod bytecode_compiler;
-mod treewalk;
 
 type RunResult = Result<(), String>;
 
