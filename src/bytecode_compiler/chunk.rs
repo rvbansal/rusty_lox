@@ -4,7 +4,7 @@ pub type Value = f64;
 pub type ConstantIndex = u8;
 
 pub struct Chunk {
-    code: Vec<u8>,
+    pub code: Vec<u8>,
     constants: Vec<Value>,
     lines: Vec<usize>,
 }
@@ -31,7 +31,7 @@ impl Chunk {
             .expect("Constant array not large enough to handle this constant.")
     }
 
-    fn read_constant(&self, index: ConstantIndex) -> Value {
+    pub fn read_constant(&self, index: ConstantIndex) -> Value {
         self.constants[index as usize]
     }
 
@@ -48,7 +48,7 @@ impl Chunk {
         }
     }
 
-    fn disassemble_at_offset(&self, offset: usize) -> usize {
+    pub fn disassemble_at_offset(&self, offset: usize) -> usize {
         // Print byte offset and line
         print!("{:04}", offset);
         if offset == 0 || self.lines[offset] != self.lines[offset - 1] {
@@ -74,6 +74,11 @@ impl Chunk {
                 let constant = self.read_constant(index);
                 println!("OP_CONSTANT {:4} {}", index, constant);
             }
+            OpCode::Add => println!("OP_ADD"),
+            OpCode::Subtract => println!("OP_SUBTRACT"),
+            OpCode::Multiply => println!("OP_MULTIPLY"),
+            OpCode::Divide => println!("OP_DIVIDE"),
+            OpCode::Negate => println!("OP_NEGATE"),
         };
 
         offset + opcode.num_operands() + 1

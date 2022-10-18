@@ -2,8 +2,9 @@ use crate::treewalk::Interpreter;
 use crate::treewalk::Lexer;
 use crate::treewalk::Parser;
 use crate::treewalk::Resolver;
-use bytecode_compiler::chunk::Chunk;
-use bytecode_compiler::opcode::OpCode;
+use bytecode_compiler::Chunk;
+use bytecode_compiler::OpCode;
+use bytecode_compiler::VM;
 
 use std::io::Write;
 use std::{env, fs, io, process};
@@ -16,11 +17,29 @@ type RunResult = Result<(), String>;
 fn main() {
     let mut chunk = Chunk::new();
 
-    let index = chunk.add_constant(99.0);
-    chunk.write_instruction(OpCode::Constant, 1);
-    chunk.write_byte(index, 1);
-    chunk.write_instruction(OpCode::Return, 1);
-    chunk.disassemble("Trial chunk.")
+    let c1_idx = chunk.add_constant(99.0);
+    chunk.write_instruction(OpCode::Constant, 876);
+    chunk.write_byte(c1_idx, 876);
+
+    let c2_idx = chunk.add_constant(3.0);
+    chunk.write_instruction(OpCode::Constant, 876);
+    chunk.write_byte(c2_idx, 876);
+
+    chunk.write_instruction(OpCode::Add, 876);
+
+    let c3_idx = chunk.add_constant(2.0);
+    chunk.write_instruction(OpCode::Constant, 876);
+    chunk.write_byte(c3_idx, 876);
+
+    chunk.write_instruction(OpCode::Divide, 876);
+    chunk.write_instruction(OpCode::Negate, 876);
+
+    chunk.write_instruction(OpCode::Return, 876);
+
+    match VM::new().interpret(&chunk) {
+        Ok(_) => (),
+        Err(e) => println!("Error: {:?}", e),
+    }
 }
 
 fn main_treewalk() {

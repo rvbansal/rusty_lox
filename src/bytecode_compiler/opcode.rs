@@ -3,8 +3,13 @@ use num_enum::{IntoPrimitive, TryFromPrimitive};
 #[derive(Copy, Clone, IntoPrimitive, TryFromPrimitive)]
 #[repr(u8)]
 pub enum OpCode {
-    Return = 0,
-    Constant = 1,
+    Return,
+    Constant,
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    Negate,
 }
 
 impl OpCode {
@@ -12,6 +17,9 @@ impl OpCode {
         match self {
             OpCode::Return => 0,
             OpCode::Constant => 1,
+            OpCode::Add | OpCode::Subtract | OpCode::Multiply | OpCode::Divide | OpCode::Negate => {
+                0
+            }
         }
     }
 }
