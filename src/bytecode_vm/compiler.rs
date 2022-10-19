@@ -3,7 +3,7 @@ use crate::lox_frontend::operator::{InfixOperator, PrefixOperator};
 
 use super::chunk::Chunk;
 use super::opcode::OpCode;
-use super::value::Value;
+use super::value::{Object, Value};
 
 const DEBUG_COMPILE_CODE: bool = false;
 
@@ -55,7 +55,12 @@ impl Compiler {
             Literal::Nil => {
                 chunk.write_instruction(OpCode::Nil, line);
             }
-            _ => panic!("Bytecode vm cannot compile this type of literal right now."),
+            Literal::Str(s) => {
+                let heap_value = Value::make_heap_object(Object::String(s.clone()));
+                let index = chunk.add_constant(heap_value);
+                chunk.write_instruction(OpCode::Constant, line);
+                chunk.write_byte(index, line);
+            }
         }
     }
 

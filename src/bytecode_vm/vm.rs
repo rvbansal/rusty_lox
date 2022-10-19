@@ -99,7 +99,19 @@ impl VM {
                     println!("Return: {:?}", return_value);
                     return Ok(());
                 }
-                OpCode::Add => self.numerical_binop(|lhs, rhs| lhs + rhs)?,
+                OpCode::Add => {
+                    let lhs = self.peek(1)?;
+                    let rhs = self.peek(0)?;
+
+                    let result = match lhs.add(&rhs) {
+                        Some(obj) => obj,
+                        None => return Err(VmError::WrongOperandType),
+                    };
+
+                    self.pop()?;
+                    self.pop()?;
+                    self.push(result);
+                }
                 OpCode::Subtract => self.numerical_binop(|lhs, rhs| lhs - rhs)?,
                 OpCode::Multiply => self.numerical_binop(|lhs, rhs| lhs * rhs)?,
                 OpCode::Divide => {
