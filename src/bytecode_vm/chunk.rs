@@ -1,6 +1,6 @@
 use super::opcode::OpCode;
+use super::value::Value;
 
-pub type Value = f64;
 pub type ConstantIndex = u8;
 
 pub struct Chunk {
@@ -32,7 +32,7 @@ impl Chunk {
     }
 
     pub fn read_constant(&self, index: ConstantIndex) -> Value {
-        self.constants[index as usize]
+        self.constants[index as usize].clone()
     }
 
     pub fn write_instruction(&mut self, instruction: OpCode, line: usize) {
@@ -68,17 +68,24 @@ impl Chunk {
         };
 
         match opcode {
-            OpCode::Return => println!("OP_RETURN"),
+            OpCode::True => println!("OP_TRUE"),
+            OpCode::False => println!("OP_FALSE"),
+            OpCode::Nil => println!("OP_NIL"),
             OpCode::Constant => {
                 let index = self.code[offset + 1];
                 let constant = self.read_constant(index);
-                println!("OP_CONSTANT {:4} {}", index, constant);
+                println!("OP_CONSTANT {:4} {:?}", index, constant);
             }
+            OpCode::Return => println!("OP_RETURN"),
             OpCode::Add => println!("OP_ADD"),
             OpCode::Subtract => println!("OP_SUBTRACT"),
             OpCode::Multiply => println!("OP_MULTIPLY"),
             OpCode::Divide => println!("OP_DIVIDE"),
             OpCode::Negate => println!("OP_NEGATE"),
+            OpCode::Not => println!("OP_NOT"),
+            OpCode::Equal => println!("OP_EQUAL"),
+            OpCode::GreaterThan => println!("OP_GREATER"),
+            OpCode::LessThan => println!("OP_LESS"),
         };
 
         offset + opcode.num_operands() + 1

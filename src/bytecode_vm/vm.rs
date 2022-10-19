@@ -1,5 +1,7 @@
-use super::chunk::{Chunk, Value};
+use super::chunk::Chunk;
 use super::opcode::OpCode;
+use super::value::Value;
+use super::vm_errors::{VmError, VmResult};
 
 use std::convert::TryFrom;
 
@@ -8,14 +10,6 @@ const DEBUG_TRACE_EXECUTION: bool = true;
 pub struct VM {
     stack: Vec<Value>,
 }
-
-#[derive(Debug)]
-pub enum VmError {
-    UnknownOpCode(u8),
-    DivideByZero,
-}
-
-pub type VmResult<T> = Result<T, VmError>;
 
 impl VM {
     pub fn new() -> Self {
@@ -26,8 +20,48 @@ impl VM {
         self.stack.push(value);
     }
 
-    fn pop(&mut self) -> Value {
-        self.stack.pop().expect("Popped from empty stack!")
+    fn pop(&mut self) -> VmResult<Value> {
+        self.stack.pop().ok_or(VmError::StackEmpty)
+    }
+
+    fn peek(&self, distance_from_top: usize) -> VmResult<Value> {
+        let stack_len = self.stack.len();
+        self.stack
+            .get(stack_len - 1 - distance_from_top)
+            .cloned()
+            .ok_or(VmError::InvalidStackIndex)
+    }
+
+    fn numerical_binop<F>(&mut self, func: F) -> VmResult<()>
+    where
+        F: Fn(f64, f64) -> f64,
+    {
+        self.binop(|a, b| Value::Number(func(a, b)))
+    }
+
+    fn logical_binop<F>(&mut self, func: F) -> VmResult<()>
+    where
+        F: Fn(f64, f64) -> bool,
+    {
+        self.binop(|a, b| Value::Boolean(func(a, b)))
+    }
+
+    fn binop<F>(&mut self, func: F) -> VmResult<()>
+    where
+        F: Fn(f64, f64) -> Value,
+    {
+        let rhs = self.peek(0)?;
+        let lhs = self.peek(1)?;
+        match (lhs, rhs) {
+            (Value::Number(l), Value::Number(r)) => {
+                let outcome = func(l, r);
+                self.pop()?;
+                self.pop()?;
+                self.push(outcome);
+                Ok(())
+            }
+            (_, _) => Err(VmError::WrongOperandType),
+        }
     }
 
     pub fn interpret(&mut self, chunk: &Chunk) -> VmResult<()> {
@@ -52,44 +86,48 @@ impl VM {
 
             // Run instruction
             match op {
-                OpCode::Return => {
-                    let return_value = self.pop();
-                    // Just print for now
-                    println!("Return: {}", return_value);
-                    return Ok(());
-                }
+                OpCode::True => self.push(Value::Boolean(true)),
+                OpCode::False => self.push(Value::Boolean(false)),
+                OpCode::Nil => self.push(Value::Nil),
                 OpCode::Constant => {
                     let constant = chunk.read_constant(chunk.code[ip + 1]);
                     self.push(constant);
                 }
-                OpCode::Add => {
-                    let rhs = self.pop();
-                    let lhs = self.pop();
-                    self.push(rhs + lhs);
+                OpCode::Return => {
+                    let return_value = self.pop()?;
+                    // Just print for now
+                    println!("Return: {:?}", return_value);
+                    return Ok(());
                 }
-                OpCode::Subtract => {
-                    let rhs = self.pop();
-                    let lhs = self.pop();
-                    self.push(lhs - rhs);
-                }
-                OpCode::Multiply => {
-                    let rhs = self.pop();
-                    let lhs = self.pop();
-                    self.push(rhs * lhs);
-                }
+                OpCode::Add => self.numerical_binop(|lhs, rhs| lhs + rhs)?,
+                OpCode::Subtract => self.numerical_binop(|lhs, rhs| lhs - rhs)?,
+                OpCode::Multiply => self.numerical_binop(|lhs, rhs| lhs * rhs)?,
                 OpCode::Divide => {
-                    let rhs = self.pop();
-                    let lhs = self.pop();
-                    if rhs != 0.0 {
-                        self.push(lhs / rhs);
-                    } else {
-                        return Err(VmError::DivideByZero);
+                    if let Value::Number(n) = self.peek(0)? {
+                        if n == 0.0 {
+                            return Err(VmError::DivideByZero);
+                        }
                     }
+                    self.numerical_binop(|lhs, rhs| lhs / rhs)?;
                 }
-                OpCode::Negate => {
-                    let value = -self.pop();
-                    self.push(value);
+                OpCode::Negate => match self.peek(0)? {
+                    Value::Number(n) => {
+                        self.pop()?;
+                        self.push(Value::Number(-n));
+                    }
+                    _ => return Err(VmError::WrongOperandType),
+                },
+                OpCode::Not => {
+                    let value = self.pop()?;
+                    self.push(Value::Boolean(!value.is_truthy()));
                 }
+                OpCode::Equal => {
+                    let rhs = self.pop()?;
+                    let lhs = self.pop()?;
+                    self.push(Value::Boolean(lhs == rhs));
+                }
+                OpCode::GreaterThan => self.logical_binop(|lhs, rhs| lhs > rhs)?,
+                OpCode::LessThan => self.logical_binop(|lhs, rhs| lhs < rhs)?,
             }
 
             ip += op.num_operands() + 1;
