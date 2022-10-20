@@ -1,6 +1,7 @@
 mod chunk;
 mod compiler;
 mod opcode;
+mod string_interner;
 mod value;
 mod vm;
 mod vm_errors;

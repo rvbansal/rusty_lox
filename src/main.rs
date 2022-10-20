@@ -82,10 +82,12 @@ fn run(interpreter: &mut Interpreter, source: &str) -> RunResult {
     };
 
     if USE_BYTECODE_VM {
-        let mut bytecode = Chunk::new();
-        Compiler::compile(&stmts[0], &mut bytecode);
-
         let mut vm = VM::new();
+        let mut compiler = Compiler::new(&mut vm);
+
+        let mut bytecode = Chunk::new();
+        compiler.compile(&stmts[0], &mut bytecode);
+
         match vm.interpret(&bytecode) {
             Ok(_) => Ok(()),
             Err(e) => Err(format!("{:?}", e)),

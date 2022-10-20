@@ -1,5 +1,6 @@
 use super::chunk::Chunk;
 use super::opcode::OpCode;
+use super::string_interner::{StringIntern, StringInterner};
 use super::value::Value;
 use super::vm_errors::{VmError, VmResult};
 
@@ -9,11 +10,15 @@ const DEBUG_TRACE_EXECUTION: bool = true;
 
 pub struct VM {
     stack: Vec<Value>,
+    string_table: StringInterner,
 }
 
 impl VM {
     pub fn new() -> Self {
-        VM { stack: vec![] }
+        VM {
+            stack: vec![],
+            string_table: StringInterner::new(),
+        }
     }
 
     fn push(&mut self, value: Value) {
@@ -64,6 +69,24 @@ impl VM {
         }
     }
 
+    pub fn get_string_intern(&mut self, s: &str) -> StringIntern {
+        self.string_table.get_string_intern(s)
+    }
+
+    pub fn add(&mut self, lhs: Value, rhs: Value) -> Option<Value> {
+        let obj = match (lhs, rhs) {
+            (Value::Number(x), Value::Number(y)) => Value::Number(x + y),
+            (Value::String(x), Value::String(y)) => {
+                let dynamic_string = x.as_ref().to_owned() + &y;
+                let string_intern = self.string_table.get_string_intern(dynamic_string);
+                Value::String(string_intern)
+            }
+            _ => return None,
+        };
+
+        Some(obj)
+    }
+
     pub fn interpret(&mut self, chunk: &Chunk) -> VmResult<()> {
         self.run(chunk, 0)
     }
@@ -103,7 +126,7 @@ impl VM {
                     let lhs = self.peek(1)?;
                     let rhs = self.peek(0)?;
 
-                    let result = match lhs.add(&rhs) {
+                    let result = match self.add(lhs, rhs) {
                         Some(obj) => obj,
                         None => return Err(VmError::WrongOperandType),
                     };
