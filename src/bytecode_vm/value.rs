@@ -1,6 +1,6 @@
 use super::string_interner::StringIntern;
 use std::fmt;
-use std::{ops::Deref, rc::Rc};
+use std::rc::Rc;
 
 #[derive(Clone)]
 pub enum Value {

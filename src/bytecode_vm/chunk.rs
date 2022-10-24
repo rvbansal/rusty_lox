@@ -49,8 +49,21 @@ impl Chunk {
     }
 
     pub fn disassemble_at_offset(&self, offset: usize) -> usize {
-        // Print byte offset and line
-        print!("{:04}", offset);
+        // Macro rules.
+        macro_rules! format_print_two {
+            ($first:expr, $second:expr) => {
+                println!("{:20} {:4}", $first, $second)
+            };
+        }
+
+        macro_rules! format_print_three {
+            ($first:expr, $second:expr, $third:expr) => {
+                println!("{:20} {:4} {:?}", $first, $second, $third)
+            };
+        }
+
+        // Print byte offset and line.
+        print!("{:4}", offset);
         if offset == 0 || self.lines[offset] != self.lines[offset - 1] {
             print!("{:4} ", self.lines[offset]);
         } else {
@@ -74,9 +87,8 @@ impl Chunk {
             OpCode::Constant => {
                 let index = self.code[offset + 1];
                 let constant = self.read_constant(index);
-                println!("OP_CONSTANT {:4} {:?}", index, constant);
+                format_print_three!("OP_CONSTANT", index, constant);
             }
-            OpCode::Return => println!("OP_RETURN"),
             OpCode::Add => println!("OP_ADD"),
             OpCode::Subtract => println!("OP_SUBTRACT"),
             OpCode::Multiply => println!("OP_MULTIPLY"),
@@ -86,6 +98,31 @@ impl Chunk {
             OpCode::Equal => println!("OP_EQUAL"),
             OpCode::GreaterThan => println!("OP_GREATER"),
             OpCode::LessThan => println!("OP_LESS"),
+            OpCode::Return => println!("OP_RETURN"),
+            OpCode::Print => println!("OP_PRINT"),
+            OpCode::Pop => println!("OP_POP"),
+            OpCode::DefineGlobal => {
+                let index = self.code[offset + 1];
+                let constant = self.read_constant(index);
+                format_print_three!("OP_DEFINE_GLOBAL", index, constant);
+            }
+            OpCode::GetGlobal => {
+                let index = self.code[offset + 1];
+                let constant = self.read_constant(index);
+                format_print_three!("OP_GET_GLOBAL", index, constant);
+            }
+            OpCode::SetGlobal => {
+                let index = self.code[offset + 1];
+                format_print_two!("OP_SET_GLOBAL", index);
+            }
+            OpCode::GetLocal => {
+                let index = self.code[offset + 1];
+                format_print_two!("OP_GET_LOCAL", index);
+            }
+            OpCode::SetLocal => {
+                let index = self.code[offset + 1];
+                format_print_two!("OP_SET_LOCAL", index);
+            }
         };
 
         offset + opcode.num_operands() + 1

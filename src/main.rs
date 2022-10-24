@@ -1,4 +1,5 @@
 use crate::bytecode_vm::{Chunk, Compiler, VM};
+use crate::lox_frontend::grammar::Stmt;
 use crate::lox_frontend::{Lexer, Parser};
 use crate::treewalk_interpreter::{Interpreter, Resolver};
 
@@ -16,9 +17,15 @@ const USE_BYTECODE_VM: bool = true;
 fn main() {
     let args: Vec<String> = env::args().collect();
 
+    let interpreter: Box<dyn Run> = if USE_BYTECODE_VM {
+        Box::new(VM::new())
+    } else {
+        Box::new(Interpreter::new())
+    };
+
     match args.len() {
-        1 => run_prompt(),
-        2 => run_file(&args[1]),
+        1 => run_prompt(interpreter),
+        2 => run_file(interpreter, &args[1]),
         _ => {
             eprintln!("Usage: rlox [script]");
             process::exit(64);
@@ -27,9 +34,7 @@ fn main() {
 }
 
 /// Run prompt from REPL.
-fn run_prompt() {
-    let mut interpreter = Interpreter::new();
-
+fn run_prompt(mut interpreter: Box<dyn Run>) {
     loop {
         let mut input = String::new();
         print!("> ");
@@ -46,7 +51,7 @@ fn run_prompt() {
             print!("  ");
         }
 
-        match run(&mut interpreter, &input) {
+        match run(interpreter.as_mut(), &input) {
             Ok(_) => {}
             Err(e) => report_error(&e),
         }
@@ -54,17 +59,16 @@ fn run_prompt() {
 }
 
 /// Run .lox source code file.
-fn run_file(filename: &str) {
+fn run_file(mut interpreter: Box<dyn Run>, filename: &str) {
     let contents = fs::read_to_string(filename).expect("Failed to read file.");
-    let mut interpreter = Interpreter::new();
 
-    match run(&mut interpreter, &contents) {
+    match run(interpreter.as_mut(), &contents) {
         Ok(_) => {}
         Err(e) => report_error(&e),
     }
 }
 
-fn run(interpreter: &mut Interpreter, source: &str) -> RunResult {
+fn run(interpreter: &mut dyn Run, source: &str) -> RunResult {
     // Run lexer.
     let lexer = Lexer::new(source);
     let tokens: Result<Vec<_>, _> = lexer.iter().collect();
@@ -76,24 +80,36 @@ fn run(interpreter: &mut Interpreter, source: &str) -> RunResult {
     // Run parser.
     let parser = Parser::new(tokens.into_iter());
     let stmts: Vec<_> = parser.parse();
-    let mut stmts: Vec<_> = match stmts.into_iter().collect() {
+    let stmts: Vec<_> = match stmts.into_iter().collect() {
         Ok(stmts) => stmts,
         Err(e) => return Err(format!("{:?}", e)),
     };
 
-    if USE_BYTECODE_VM {
-        let mut vm = VM::new();
-        let mut compiler = Compiler::new(&mut vm);
+    interpreter.consume_statements(stmts)
+}
 
+trait Run {
+    fn consume_statements(&mut self, stmts: Vec<Stmt>) -> RunResult;
+}
+
+impl Run for VM {
+    fn consume_statements(&mut self, stmts: Vec<Stmt>) -> RunResult {
+        let mut compiler = Compiler::new(self);
         let mut bytecode = Chunk::new();
-        compiler.compile(&stmts[0], &mut bytecode);
 
-        match vm.interpret(&bytecode) {
+        if let Err(e) = compiler.compile(&stmts, &mut bytecode) {
+            return Err(format!("{:?}", e));
+        }
+
+        match self.interpret(&bytecode) {
             Ok(_) => Ok(()),
             Err(e) => Err(format!("{:?}", e)),
         }
-    } else {
-        // Run resolver.
+    }
+}
+
+impl Run for Interpreter {
+    fn consume_statements(&mut self, mut stmts: Vec<Stmt>) -> RunResult {
         let mut resolver = Resolver::new();
         for stmt in stmts.iter_mut() {
             match resolver.resolve_root(stmt) {
@@ -102,8 +118,7 @@ fn run(interpreter: &mut Interpreter, source: &str) -> RunResult {
             }
         }
 
-        // Run interpreter.
-        match interpreter.eval_statements(stmts) {
+        match self.eval_statements(stmts) {
             Ok(_) => Ok(()),
             Err(e) => Err(format!("{:?}", e)),
         }

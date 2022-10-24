@@ -1,10 +1,10 @@
 mod chunk;
 mod compiler;
+mod errors;
 mod opcode;
 mod string_interner;
 mod value;
 mod vm;
-mod vm_errors;
 
 pub use chunk::Chunk;
 pub use compiler::Compiler;

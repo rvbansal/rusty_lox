@@ -17,6 +17,13 @@ pub enum OpCode {
     Equal,
     GreaterThan,
     LessThan,
+    Print,
+    Pop,
+    DefineGlobal,
+    GetGlobal,
+    SetGlobal,
+    GetLocal,
+    SetLocal,
 }
 
 impl OpCode {
@@ -25,12 +32,14 @@ impl OpCode {
             OpCode::True | OpCode::False => 0,
             OpCode::Nil => 0,
             OpCode::Constant => 1,
-            OpCode::Return => 0,
             OpCode::Add | OpCode::Subtract | OpCode::Multiply | OpCode::Divide | OpCode::Negate => {
                 0
             }
             OpCode::Not => 0,
             OpCode::Equal | OpCode::GreaterThan | OpCode::LessThan => 0,
+            OpCode::Return | OpCode::Print | OpCode::Pop => 0,
+            OpCode::DefineGlobal | OpCode::GetGlobal | OpCode::SetGlobal => 1,
+            OpCode::GetLocal | OpCode::SetLocal => 1,
         }
     }
 }

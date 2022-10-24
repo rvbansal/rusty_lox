@@ -1,9 +1,10 @@
 use super::chunk::Chunk;
+use super::errors::{VmError, VmResult};
 use super::opcode::OpCode;
 use super::string_interner::{StringIntern, StringInterner};
 use super::value::Value;
-use super::vm_errors::{VmError, VmResult};
 
+use std::collections::HashMap;
 use std::convert::TryFrom;
 
 const DEBUG_TRACE_EXECUTION: bool = true;
@@ -11,6 +12,7 @@ const DEBUG_TRACE_EXECUTION: bool = true;
 pub struct VM {
     stack: Vec<Value>,
     string_table: StringInterner,
+    globals: HashMap<StringIntern, Value>,
 }
 
 impl VM {
@@ -18,6 +20,7 @@ impl VM {
         VM {
             stack: vec![],
             string_table: StringInterner::new(),
+            globals: HashMap::new(),
         }
     }
 
@@ -73,6 +76,13 @@ impl VM {
         self.string_table.get_string_intern(s)
     }
 
+    fn read_string(&self, chunk: &Chunk, index: usize) -> StringIntern {
+        match chunk.read_constant(chunk.code[index]) {
+            Value::String(s) => s,
+            _ => panic!("Global var contains non-string identifier."),
+        }
+    }
+
     pub fn add(&mut self, lhs: Value, rhs: Value) -> Option<Value> {
         let obj = match (lhs, rhs) {
             (Value::Number(x), Value::Number(y)) => Value::Number(x + y),
@@ -116,12 +126,6 @@ impl VM {
                     let constant = chunk.read_constant(chunk.code[ip + 1]);
                     self.push(constant);
                 }
-                OpCode::Return => {
-                    let return_value = self.pop()?;
-                    // Just print for now
-                    println!("Return: {:?}", return_value);
-                    return Ok(());
-                }
                 OpCode::Add => {
                     let lhs = self.peek(1)?;
                     let rhs = self.peek(0)?;
@@ -163,6 +167,53 @@ impl VM {
                 }
                 OpCode::GreaterThan => self.logical_binop(|lhs, rhs| lhs > rhs)?,
                 OpCode::LessThan => self.logical_binop(|lhs, rhs| lhs < rhs)?,
+                OpCode::Return => {
+                    return Ok(());
+                }
+                OpCode::Print => {
+                    let value = self.pop()?;
+                    println!("[out] {:?}", value);
+                }
+                OpCode::Pop => {
+                    self.pop()?;
+                }
+                OpCode::DefineGlobal => {
+                    let name = self.read_string(chunk, ip + 1);
+                    let value = self.pop()?;
+                    self.globals.insert(name, value);
+                }
+                OpCode::GetGlobal => {
+                    let name = self.read_string(chunk, ip + 1);
+                    let value = match self.globals.get(&name) {
+                        Some(value) => value.clone(),
+                        None => {
+                            let name: String = (*name).to_owned();
+                            return Err(VmError::UndefinedGlobal(name));
+                        }
+                    };
+                    self.push(value);
+                }
+                OpCode::SetGlobal => {
+                    let name = self.read_string(chunk, ip + 1);
+                    if !self.globals.contains_key(&name) {
+                        let name: String = (*name).to_owned();
+                        return Err(VmError::UndefinedGlobal(name));
+                    }
+                    // Do not pop value, since assignment is an expression and can
+                    // be nested inside another expression that needs the value.
+                    let value = self.peek(0)?;
+                    self.globals.insert(name, value);
+                }
+                OpCode::GetLocal => {
+                    let index = chunk.code[ip + 1];
+                    let value = self.stack[index as usize].clone();
+                    self.push(value);
+                }
+                OpCode::SetLocal => {
+                    let value = self.pop()?;
+                    let index = chunk.code[ip + 1];
+                    self.stack[index as usize] = value;
+                }
             }
 
             ip += op.num_operands() + 1;
