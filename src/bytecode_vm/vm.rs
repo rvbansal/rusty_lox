@@ -5,7 +5,6 @@ use super::string_interner::{StringIntern, StringInterner};
 use super::value::Value;
 
 use std::collections::HashMap;
-use std::convert::TryFrom;
 
 const DEBUG_TRACE_EXECUTION: bool = true;
 
@@ -77,7 +76,7 @@ impl VM {
     }
 
     fn read_string(&self, chunk: &Chunk, index: usize) -> StringIntern {
-        match chunk.read_constant(chunk.code[index]) {
+        match chunk.read_constant(chunk.read_byte(index)) {
             Value::String(s) => s,
             _ => panic!("Global var contains non-string identifier."),
         }
@@ -108,14 +107,14 @@ impl VM {
                 chunk.disassemble_at_offset(ip);
             }
 
-            // Get current bytecode
-            let byte = chunk.code[ip];
-
             // Convert bytecode to opcode
-            let op = match OpCode::try_from(byte) {
+            let op = match chunk.try_read_op(ip) {
                 Ok(op) => op,
-                Err(_) => return Err(VmError::UnknownOpCode(byte)),
+                Err(byte) => return Err(VmError::UnknownOpCode(byte)),
             };
+
+            // Jump to arg
+            let mut jump_to: Option<usize> = None;
 
             // Run instruction
             match op {
@@ -123,7 +122,8 @@ impl VM {
                 OpCode::False => self.push(Value::Boolean(false)),
                 OpCode::Nil => self.push(Value::Nil),
                 OpCode::Constant => {
-                    let constant = chunk.read_constant(chunk.code[ip + 1]);
+                    let index = chunk.read_byte(ip + 1);
+                    let constant = chunk.read_constant(index);
                     self.push(constant);
                 }
                 OpCode::Add => {
@@ -167,16 +167,6 @@ impl VM {
                 }
                 OpCode::GreaterThan => self.logical_binop(|lhs, rhs| lhs > rhs)?,
                 OpCode::LessThan => self.logical_binop(|lhs, rhs| lhs < rhs)?,
-                OpCode::Return => {
-                    return Ok(());
-                }
-                OpCode::Print => {
-                    let value = self.pop()?;
-                    println!("[out] {:?}", value);
-                }
-                OpCode::Pop => {
-                    self.pop()?;
-                }
                 OpCode::DefineGlobal => {
                     let name = self.read_string(chunk, ip + 1);
                     let value = self.pop()?;
@@ -205,18 +195,45 @@ impl VM {
                     self.globals.insert(name, value);
                 }
                 OpCode::GetLocal => {
-                    let index = chunk.code[ip + 1];
+                    let index = chunk.read_byte(ip + 1);
                     let value = self.stack[index as usize].clone();
                     self.push(value);
                 }
                 OpCode::SetLocal => {
-                    let value = self.pop()?;
-                    let index = chunk.code[ip + 1];
+                    let value = self.peek(0)?;
+                    let index = chunk.read_byte(ip + 1);
                     self.stack[index as usize] = value;
+                }
+                OpCode::Return => {
+                    return Ok(());
+                }
+                OpCode::Print => {
+                    let value = self.pop()?;
+                    println!("[out] {:?}", value);
+                }
+                OpCode::Pop => {
+                    self.pop()?;
+                }
+                OpCode::Jump => {
+                    let jump_by = usize::from(chunk.read_short(ip + 1));
+                    jump_to = Some(ip + 3 + jump_by);
+                }
+                OpCode::JumpIfFalse => {
+                    if !self.peek(0)?.is_truthy() {
+                        let jump_by = usize::from(chunk.read_short(ip + 1));
+                        jump_to = Some(ip + 3 + jump_by);
+                    }
+                }
+                OpCode::Loop => {
+                    let jump_by = usize::from(chunk.read_short(ip + 1));
+                    jump_to = Some(ip + 3 - jump_by);
                 }
             }
 
-            ip += op.num_operands() + 1;
+            ip = match jump_to {
+                Some(n) => n,
+                None => ip + op.operand_size_in_bytes() + 1,
+            }
         }
     }
 }

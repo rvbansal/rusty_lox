@@ -7,7 +7,6 @@ pub enum OpCode {
     False,
     Nil,
     Constant,
-    Return,
     Add,
     Subtract,
     Multiply,
@@ -17,17 +16,21 @@ pub enum OpCode {
     Equal,
     GreaterThan,
     LessThan,
-    Print,
-    Pop,
     DefineGlobal,
     GetGlobal,
     SetGlobal,
     GetLocal,
     SetLocal,
+    Jump,
+    JumpIfFalse,
+    Loop,
+    Return,
+    Print,
+    Pop,
 }
 
 impl OpCode {
-    pub fn num_operands(&self) -> usize {
+    pub fn operand_size_in_bytes(&self) -> usize {
         match self {
             OpCode::True | OpCode::False => 0,
             OpCode::Nil => 0,
@@ -37,9 +40,10 @@ impl OpCode {
             }
             OpCode::Not => 0,
             OpCode::Equal | OpCode::GreaterThan | OpCode::LessThan => 0,
-            OpCode::Return | OpCode::Print | OpCode::Pop => 0,
             OpCode::DefineGlobal | OpCode::GetGlobal | OpCode::SetGlobal => 1,
             OpCode::GetLocal | OpCode::SetLocal => 1,
+            OpCode::Jump | OpCode::JumpIfFalse | OpCode::Loop => 2,
+            OpCode::Return | OpCode::Print | OpCode::Pop => 0,
         }
     }
 }
