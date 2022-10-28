@@ -128,7 +128,7 @@ impl<'s> Compiler<'s> {
         }
     }
 
-    pub fn compile(&mut self, stmts: &Vec<Stmt>) -> CompilerResult<Chunk> {
+    pub fn compile(&mut self, stmts: &[Stmt]) -> CompilerResult<Chunk> {
         // Push a new compiler context and reserve first slot.
         self.context_stack.push(CompilerContext::new(""));
 
@@ -559,7 +559,7 @@ impl<'s> Compiler<'s> {
         Ok(VariableLocator::Upvalue(upvalue_index))
     }
 
-    fn print_chunk(&self, name: &str, chunk: &Chunk) {
+    fn print_chunk(&self, _name: &str, _chunk: &Chunk) {
         #[cfg(feature = "print-chunks")]
         chunk.disassemble(name);
     }

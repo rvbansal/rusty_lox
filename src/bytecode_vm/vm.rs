@@ -58,8 +58,8 @@ impl VM {
             let name = vm.get_string_intern(name);
             let native_fn = vm.make_heap_value(HeapObject::NativeFn {
                 name: name.clone(),
-                arity: arity,
-                function: function,
+                arity,
+                function,
             });
             vm.globals.insert(name, native_fn);
         }
@@ -77,7 +77,7 @@ impl VM {
 
         let main_name = self.get_string_intern("<main>");
         let main_fn = self.make_heap_value(HeapObject::LoxClosure {
-            name: main_name.clone(),
+            name: main_name,
             arity: 0,
             chunk: Rc::new(main_chunk),
         });
@@ -110,7 +110,7 @@ impl VM {
                     ip, base_ptr, self.stack[base_ptr]
                 );
                 self.frame_mut().chunk().disassemble_at_offset(ip);
-                println!("");
+                println!();
             }
 
             // Convert bytecode to opcode
@@ -127,7 +127,7 @@ impl VM {
                 OpCode::Constant => {
                     let index = self.frame_mut().read_byte();
                     let value = match self.frame().chunk.read_constant(index) {
-                        ChunkConstant::Number(n) => Value::Number(n.into()),
+                        ChunkConstant::Number(n) => Value::Number(n),
                         ChunkConstant::String(s) => Value::String(s),
                         c => return Err(VmError::CannotParseConstant(c)),
                     };
@@ -213,9 +213,9 @@ impl VM {
                             chunk,
                             upvalue_count,
                         } => {
-                            for i in 0..upvalue_count {
-                                let kind = self.frame_mut().read_byte();
-                                let index = self.frame_mut().read_byte();
+                            for _i in 0..upvalue_count {
+                                let _kind = self.frame_mut().read_byte();
+                                let _index = self.frame_mut().read_byte();
                             }
 
                             HeapObject::LoxClosure {
@@ -235,7 +235,7 @@ impl VM {
                 OpCode::Return => {
                     let result = self.pop_frame()?;
 
-                    if self.call_stack.len() == 0 {
+                    if self.call_stack.is_empty() {
                         return Ok(());
                     } else {
                         self.push(result);

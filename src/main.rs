@@ -1,4 +1,4 @@
-use crate::bytecode_vm::{Chunk, Compiler, VM};
+use crate::bytecode_vm::{Compiler, VM};
 use crate::lox_frontend::grammar::Stmt;
 use crate::lox_frontend::{Lexer, Parser};
 use crate::treewalk_interpreter::{Interpreter, Resolver};
