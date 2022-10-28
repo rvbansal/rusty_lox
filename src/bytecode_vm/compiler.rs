@@ -19,7 +19,7 @@ const MAX_UPVALUES: usize = 256;
 type UpvalueIndex = u8;
 
 #[derive(Clone, PartialEq, Eq)]
-enum Upvalue {
+pub enum Upvalue {
     Immediate(LocalIndex),
     Recursive(UpvalueIndex),
 }
@@ -34,6 +34,7 @@ struct Local {
     name: String,
     scope_depth: u32,
     initialized: bool,
+    captured: bool,
 }
 
 struct CompilerContext {
@@ -54,6 +55,7 @@ impl CompilerContext {
             name: reserved_name.to_owned(),
             scope_depth: 0,
             initialized: false,
+            captured: false,
         };
         CompilerContext {
             chunk: Chunk::new(),
@@ -67,7 +69,7 @@ impl CompilerContext {
         for (index, local) in self.locals.iter().enumerate().rev() {
             if local.name == name {
                 if !local.initialized {
-                    return Err(CompilerError::LocalVarDefinedAlready(name.to_owned()));
+                    return Err(CompilerError::UseVarInInitialization(name.to_owned()));
                 }
 
                 return Ok(Some(index.try_into().unwrap()));
@@ -92,6 +94,7 @@ impl CompilerContext {
             name: name.to_owned(),
             scope_depth: self.scope_depth,
             initialized: false,
+            captured: false,
         };
         self.locals.push(local);
 
@@ -136,7 +139,6 @@ impl<'s> Compiler<'s> {
         for stmt in stmts.iter() {
             self.compile_statement(stmt)?;
         }
-
         self.chunk().write_op(OpCode::Return, 99);
 
         let main_context = self.context_stack.pop().expect("Empty context stack.");
@@ -523,12 +525,15 @@ impl<'s> Compiler<'s> {
 
         // Pop off local variables. Have to pop them off VM stack so put pop opcodes.
         while let Some(local) = context.locals.last() {
-            if local.scope_depth > context.scope_depth {
-                context.chunk.write_op(OpCode::Pop, 99);
-                context.locals.pop();
-            } else {
+            if local.scope_depth <= context.scope_depth {
                 break;
             }
+            if local.captured {
+                context.chunk.write_op(OpCode::CloseUpvalue, 99);
+            } else {
+                context.chunk.write_op(OpCode::Pop, 99);
+            }
+            context.locals.pop();
         }
     }
 
@@ -541,18 +546,20 @@ impl<'s> Compiler<'s> {
             }
         }
 
-        let (root_index, local_index) = match found_at {
+        let (stack_index, local_index) = match found_at {
             Some(t) => t,
             None => return Ok(VariableLocator::Global),
         };
 
-        if root_index == self.context_stack.len() - 1 {
+        if stack_index == self.context_stack.len() - 1 {
             return Ok(VariableLocator::Local(local_index));
         }
 
+        self.context_stack[stack_index].locals[local_index as usize].captured = true;
+
         let mut upvalue_index =
-            self.context_stack[root_index + 1].add_upvalue(Upvalue::Immediate(local_index))?;
-        for context in self.context_stack[root_index + 2..].iter_mut() {
+            self.context_stack[stack_index + 1].add_upvalue(Upvalue::Immediate(local_index))?;
+        for context in self.context_stack[stack_index + 2..].iter_mut() {
             upvalue_index = context.add_upvalue(Upvalue::Recursive(upvalue_index))?;
         }
 
@@ -561,6 +568,6 @@ impl<'s> Compiler<'s> {
 
     fn print_chunk(&self, _name: &str, _chunk: &Chunk) {
         #[cfg(feature = "print-chunks")]
-        chunk.disassemble(name);
+        _chunk.disassemble(_name);
     }
 }

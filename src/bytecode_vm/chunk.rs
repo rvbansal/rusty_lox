@@ -227,10 +227,20 @@ impl Chunk {
                 let constant = self.read_constant(index);
                 let upvalue_count = match constant {
                     ChunkConstant::FnTemplate { upvalue_count, .. } => upvalue_count,
-                    _ => todo!(),
+                    _ => panic!("Disassembler expected function template value."),
                 };
-
                 format_print_three!("OP_MAKE_CLOSURE", index, constant);
+
+                for i in 0..upvalue_count {
+                    let kind = self.read_byte(offset + 2 + 2 * i);
+                    let index = self.read_byte(offset + 2 + 2 * i + 1);
+                    print!("{:37}: ", i);
+                    match kind {
+                        1 => println!("local   #{}", index),
+                        0 => println!("upvalue #{}", index),
+                        _ => println!("?       #{}", index),
+                    };
+                }
                 variable_args_size = Some(1 + 2 * upvalue_count);
             }
             OpCode::GetUpvalue => {
@@ -241,10 +251,11 @@ impl Chunk {
                 let index = self.read_byte(offset + 1);
                 format_print_two!("OP_SET_UPVALUE", index);
             }
+            OpCode::CloseUpvalue => println!("OP_CLOSE_UPVALUE"),
         };
 
         let arg_bytes = variable_args_size.xor(opcode.operand_size_in_bytes());
 
-        offset + arg_bytes.expect("") + 1
+        offset + arg_bytes.expect("Instruction operand bytes unparseable.") + 1
     }
 }

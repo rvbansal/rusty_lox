@@ -133,7 +133,7 @@ impl<T: Traceable> Drop for GcHeap<T> {
     }
 }
 
-#[cfg(tests)]
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -141,25 +141,119 @@ mod tests {
         fn trace(&self) {}
     }
 
-    struct TestStruct {
-        next: Option<GcPtr<TestStruct>>,
+    struct RecurStruct {
+        next: Option<GcPtr<RecurStruct>>,
     }
 
-    impl TestStruct {
+    impl RecurStruct {
         fn new() -> Self {
-            TestStruct { next: None }
+            RecurStruct { next: None }
         }
 
-        fn new_with_next_struct(ns: GcPtr<TestStruct>) -> Self {
-            TestStruct { next: ns }
+        fn new_with_next_struct(ns: GcPtr<RecurStruct>) -> Self {
+            RecurStruct { next: Some(ns) }
         }
     }
 
-    impl Traceable for TestStruct {
+    impl Traceable for RecurStruct {
         fn trace(&self) {
             if let Some(next) = &self.next {
                 next.mark();
             }
         }
+    }
+
+    #[test]
+    fn test_gc_string() {
+        let mut heap = GcHeap::<String>::new();
+
+        let str1 = heap.insert("1".to_owned());
+        let str2 = heap.insert("2".to_owned());
+
+        assert_eq!("1", *str1.borrow());
+        assert_eq!("2", *str2.borrow());
+
+        str1.mark();
+        str2.mark();
+        heap.sweep();
+
+        assert_eq!("1", *str1.borrow());
+        assert_eq!("2", *str2.borrow());
+
+        str1.mark();
+        heap.sweep();
+
+        assert_eq!("1", *str1.borrow());
+        assert_eq!(None, *str2.try_borrow());
+
+        heap.sweep();
+
+        assert_eq!(None, *str1.try_borrow());
+        assert_eq!(None, *str2.try_borrow());
+    }
+
+    #[test]
+    fn test_gc_recur() {
+        let mut heap = GcHeap::<RecurStruct>::new();
+
+        let recur1 = heap.insert(RecurStruct::new());
+        let recur2 = heap.insert(RecurStruct::new_with_next_struct(recur1.clone()));
+
+        assert!(recur1.try_borrow().is_some());
+        assert!(recur2.try_borrow().is_some());
+
+        recur1.mark();
+        recur2.mark();
+        heap.sweep();
+
+        assert!(recur1.try_borrow().is_some());
+        assert!(recur2.try_borrow().is_some());
+
+        recur2.mark();
+        heap.sweep();
+
+        assert!(recur1.try_borrow().is_some());
+        assert!(recur2.try_borrow().is_some());
+
+        heap.sweep();
+
+        assert!(recur1.try_borrow().is_none());
+        assert!(recur2.try_borrow().is_none());
+    }
+
+    #[test]
+    fn test_ref_cycle() {
+        let mut heap = GcHeap::<RecurStruct>::new();
+
+        let mut recur1 = heap.insert(RecurStruct::new());
+        let recur2 = heap.insert(RecurStruct::new_with_next_struct(recur1.clone()));
+        let recur3 = heap.insert(RecurStruct::new_with_next_struct(recur2.clone()));
+        recur1.borrow_mut().next = Some(recur3.clone());
+
+        assert!(recur1.try_borrow().is_some());
+        assert!(recur2.try_borrow().is_some());
+        assert!(recur3.try_borrow().is_some());
+
+        recur1.mark();
+        recur2.mark();
+        recur3.mark();
+        heap.sweep();
+
+        assert!(recur1.try_borrow().is_some());
+        assert!(recur2.try_borrow().is_some());
+        assert!(recur3.try_borrow().is_some());
+
+        recur1.mark();
+        heap.sweep();
+
+        assert!(recur1.try_borrow().is_some());
+        assert!(recur2.try_borrow().is_some());
+        assert!(recur3.try_borrow().is_some());
+
+        heap.sweep();
+
+        assert!(recur1.try_borrow().is_none());
+        assert!(recur2.try_borrow().is_none());
+        assert!(recur3.try_borrow().is_none());
     }
 }

@@ -4,7 +4,9 @@ use super::gc::{GcHeap, GcPtr};
 use super::native_function;
 use super::opcode::OpCode;
 use super::string_interner::{StringIntern, StringInterner};
-use super::value::{HeapObject, Value};
+use super::value::{ActiveUpvalue, HeapObject, Value};
+
+use super::compiler::Upvalue;
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -14,6 +16,7 @@ struct CallFrame {
     base_ptr: usize,
     name: StringIntern,
     chunk: Rc<Chunk>,
+    upvalues: Rc<Vec<ActiveUpvalue>>,
 }
 
 impl CallFrame {
@@ -34,11 +37,21 @@ impl CallFrame {
         self.ip += 1;
         result
     }
+
+    fn try_read_upvalue(&mut self) -> Result<Upvalue, u8> {
+        let kind = self.read_byte();
+        match kind {
+            1 => Ok(Upvalue::Immediate(self.read_byte())),
+            0 => Ok(Upvalue::Recursive(self.read_byte())),
+            _ => Err(kind),
+        }
+    }
 }
 
 pub struct VM {
     call_stack: Vec<CallFrame>,
     stack: Vec<Value>,
+    open_upvalues: Vec<ActiveUpvalue>,
     heap: GcHeap<HeapObject>,
     string_table: StringInterner,
     globals: HashMap<StringIntern, Value>,
@@ -49,6 +62,7 @@ impl VM {
         let mut vm = VM {
             call_stack: vec![],
             stack: vec![],
+            open_upvalues: vec![],
             heap: GcHeap::new(),
             string_table: StringInterner::new(),
             globals: HashMap::new(),
@@ -80,6 +94,7 @@ impl VM {
             name: main_name,
             arity: 0,
             chunk: Rc::new(main_chunk),
+            upvalues: Rc::new(vec![]),
         });
         self.push(main_fn);
 
@@ -109,7 +124,7 @@ impl VM {
                     "ip = {}, bp = {} ({:?})",
                     ip, base_ptr, self.stack[base_ptr]
                 );
-                self.frame_mut().chunk().disassemble_at_offset(ip);
+                self.frame_mut().chunk.disassemble_at_offset(ip);
                 println!();
             }
 
@@ -213,15 +228,31 @@ impl VM {
                             chunk,
                             upvalue_count,
                         } => {
-                            for _i in 0..upvalue_count {
-                                let _kind = self.frame_mut().read_byte();
-                                let _index = self.frame_mut().read_byte();
+                            let mut upvalues = vec![];
+                            for i in 0..upvalue_count {
+                                let upvalue = match self.frame_mut().try_read_upvalue() {
+                                    Ok(uv) => match uv {
+                                        Upvalue::Immediate(index) => {
+                                            let upvalue = ActiveUpvalue::new(
+                                                self.frame().base_ptr + index as usize,
+                                            );
+                                            self.open_upvalues.push(upvalue.clone());
+                                            upvalue
+                                        }
+                                        Upvalue::Recursive(index) => {
+                                            self.frame().upvalues[index as usize].clone()
+                                        }
+                                    },
+                                    Err(_) => return Err(VmError::CannotParseUpvalue),
+                                };
+                                upvalues.push(upvalue);
                             }
 
                             HeapObject::LoxClosure {
                                 name,
                                 arity,
                                 chunk: chunk.clone(),
+                                upvalues: Rc::new(upvalues),
                             }
                         }
                         _ => return Err(VmError::NotCallable),
@@ -230,8 +261,26 @@ impl VM {
                     let closure_value = self.make_heap_value(closure_obj);
                     self.push(closure_value);
                 }
-                OpCode::GetUpvalue => todo!(),
-                OpCode::SetUpvalue => todo!(),
+                OpCode::GetUpvalue => {
+                    let index = self.frame_mut().read_byte() as usize;
+                    let value = match self.frame().upvalues[index].get_if_closed() {
+                        Ok(v) => v,
+                        Err(i) => self.stack[i].clone(),
+                    };
+                    self.push(value);
+                }
+                OpCode::SetUpvalue => {
+                    let index = self.frame_mut().read_byte() as usize;
+                    let value = self.peek(0)?;
+                    match self.frame().upvalues[index].set_if_closed(&value) {
+                        Ok(()) => {}
+                        Err(i) => self.stack[i] = value,
+                    };
+                }
+                OpCode::CloseUpvalue => {
+                    self.close_upvalues(self.stack.len() - 1);
+                    self.pop()?;
+                }
                 OpCode::Return => {
                     let result = self.pop_frame()?;
 
@@ -281,11 +330,16 @@ impl VM {
         };
 
         match &*heap_obj_ref {
-            HeapObject::LoxClosure { name, arity, chunk } => {
+            HeapObject::LoxClosure {
+                name,
+                arity,
+                chunk,
+                upvalues,
+            } => {
                 if *arity != num_args {
                     return Err(VmError::WrongArity);
                 }
-                self.push_new_frame(num_args, name.clone(), chunk.clone());
+                self.push_new_frame(num_args, name.clone(), chunk.clone(), upvalues.clone());
             }
 
             HeapObject::NativeFn {
@@ -324,12 +378,19 @@ impl VM {
         }
     }
 
-    fn push_new_frame(&mut self, num_args: usize, name: StringIntern, chunk: Rc<Chunk>) {
+    fn push_new_frame(
+        &mut self,
+        num_args: usize,
+        name: StringIntern,
+        chunk: Rc<Chunk>,
+        upvalues: Rc<Vec<ActiveUpvalue>>,
+    ) {
         let new_frame = CallFrame {
             ip: 0,
             base_ptr: self.stack.len() - (num_args + 1),
             name,
             chunk,
+            upvalues,
         };
         self.call_stack.push(new_frame);
     }
@@ -337,6 +398,7 @@ impl VM {
     fn pop_frame(&mut self) -> VmResult<Value> {
         let result = self.pop()?;
         let frame = self.call_stack.pop().expect("Empty call stack.");
+        self.close_upvalues(frame.base_ptr);
         self.stack.truncate(frame.base_ptr);
         Ok(result)
     }
@@ -355,6 +417,21 @@ impl VM {
             .get(stack_len - 1 - distance_from_top)
             .cloned()
             .ok_or(VmError::InvalidStackIndex)
+    }
+
+    fn close_upvalues(&mut self, stack_index: usize) {
+        for upvalue in self.open_upvalues.iter() {
+            match upvalue.get_open_index() {
+                Some(slot) if slot >= stack_index => {
+                    let value = self.stack[slot].clone();
+                    upvalue.close(value);
+                }
+                _ => {}
+            }
+        }
+
+        self.open_upvalues
+            .retain(|uv| uv.get_open_index().is_some());
     }
 
     pub fn get_string_intern(&mut self, s: &str) -> StringIntern {

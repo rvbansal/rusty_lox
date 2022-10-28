@@ -2,6 +2,7 @@ use super::chunk::Chunk;
 use super::gc::{GcPtr, Traceable};
 use super::string_interner::StringIntern;
 
+use std::cell::RefCell;
 use std::fmt;
 use std::rc::Rc;
 
@@ -16,11 +17,23 @@ pub enum Value {
 
 pub type NativeFnType = fn(&[Value]) -> Result<Value, String>;
 
+#[derive(Clone)]
+pub enum UpvalueType {
+    Open(usize),   // Lives on the stack
+    Closed(Value), // Popped off the stack to the heap
+}
+
+#[derive(Clone)]
+pub struct ActiveUpvalue {
+    location: Rc<RefCell<UpvalueType>>,
+}
+
 pub enum HeapObject {
     LoxClosure {
         name: StringIntern,
         arity: usize,
         chunk: Rc<Chunk>,
+        upvalues: Rc<Vec<ActiveUpvalue>>,
     },
     NativeFn {
         name: StringIntern,
@@ -65,6 +78,42 @@ impl Traceable for HeapObject {
         match self {
             HeapObject::LoxClosure { .. } => {}
             HeapObject::NativeFn { .. } => {}
+        }
+    }
+}
+
+impl ActiveUpvalue {
+    pub fn new(index: usize) -> Self {
+        ActiveUpvalue {
+            location: Rc::new(RefCell::new(UpvalueType::Open(index))),
+        }
+    }
+
+    pub fn close(&self, value: Value) {
+        self.location.replace(UpvalueType::Closed(value));
+    }
+
+    pub fn get_if_closed(&self) -> Result<Value, usize> {
+        match &*self.location.borrow() {
+            UpvalueType::Open(i) => Err(*i),
+            UpvalueType::Closed(v) => Ok(v.clone()),
+        }
+    }
+
+    pub fn set_if_closed(&self, value: &Value) -> Result<(), usize> {
+        match &mut *self.location.borrow_mut() {
+            UpvalueType::Open(i) => Err(*i),
+            UpvalueType::Closed(v) => {
+                *v = value.clone();
+                Ok(())
+            }
+        }
+    }
+
+    pub fn get_open_index(&self) -> Option<usize> {
+        match &*self.location.borrow() {
+            UpvalueType::Open(index) => Some(*index),
+            UpvalueType::Closed(_) => None,
         }
     }
 }

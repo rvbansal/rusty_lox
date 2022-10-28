@@ -26,6 +26,7 @@ pub enum OpCode {
     MakeClosure,
     GetUpvalue,
     SetUpvalue,
+    CloseUpvalue,
     Loop,
     Call,
     Return,
@@ -51,6 +52,7 @@ impl OpCode {
             OpCode::Call => 1,
             OpCode::MakeClosure => return None,
             OpCode::GetUpvalue | OpCode::SetUpvalue => 1,
+            OpCode::CloseUpvalue => 0,
         };
 
         Some(arg_bytes)

@@ -12,6 +12,7 @@ pub enum VmError {
     NotCallable,
     NativeFnError(String),
     CannotParseConstant(ChunkConstant),
+    CannotParseUpvalue,
 }
 
 #[derive(Debug)]
