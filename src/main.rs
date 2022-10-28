@@ -94,14 +94,14 @@ trait Run {
 
 impl Run for VM {
     fn consume_statements(&mut self, stmts: Vec<Stmt>) -> RunResult {
-        let mut compiler = Compiler::new(self);
-        let mut bytecode = Chunk::new();
+        let mut compiler = Compiler::new(self.borrow_string_table());
 
-        if let Err(e) = compiler.compile(&stmts, &mut bytecode) {
-            return Err(format!("{:?}", e));
-        }
+        let main_fn = match compiler.compile(&stmts) {
+            Ok(main_fn) => main_fn,
+            Err(e) => return Err(format!("{:?}", e)),
+        };
 
-        match self.interpret(&bytecode) {
+        match self.interpret(main_fn) {
             Ok(_) => Ok(()),
             Err(e) => Err(format!("{:?}", e)),
         }

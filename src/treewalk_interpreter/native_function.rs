@@ -4,7 +4,7 @@ use super::object::Object;
 use std::fmt;
 use std::rc::Rc;
 
-type FnType = fn(Vec<Object>, &mut Interpreter) -> RuntimeResult<Object>;
+type FnType = fn(Vec<Object>) -> RuntimeResult<Object>;
 
 pub struct NativeFnData {
     pub func: FnType,
@@ -32,7 +32,7 @@ impl NativeFn {
         interpreter: &mut Interpreter,
     ) -> RuntimeResult<Object> {
         if self.0.arity == args.len() {
-            (self.0.func)(args, interpreter)
+            (self.0.func)(args)
         } else {
             Err(InterpreterError::WrongArity(self.0.arity, args.len()))
         }
@@ -60,7 +60,7 @@ pub fn get_native_funcs() -> Vec<NativeFn> {
     vec![NativeFn::new("clock", clock, 0)]
 }
 
-fn clock(_args: Vec<Object>, _interpreter: &mut Interpreter) -> RuntimeResult<Object> {
+fn clock(_args: Vec<Object>) -> RuntimeResult<Object> {
     use std::time::{SystemTime, UNIX_EPOCH};
     let duration = SystemTime::now()
         .duration_since(UNIX_EPOCH)

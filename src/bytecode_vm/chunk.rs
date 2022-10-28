@@ -1,12 +1,37 @@
 use super::opcode::OpCode;
-use super::value::Value;
+use super::string_interner::StringIntern;
+
+use std::fmt;
+use std::rc::Rc;
 
 pub type ConstantIndex = u8;
 
+#[derive(Clone)]
+pub enum ChunkConstant {
+    Number(f64),
+    String(StringIntern),
+    FnTemplate {
+        name: StringIntern,
+        arity: usize,
+        chunk: Rc<Chunk>,
+        upvalue_count: usize,
+    },
+}
+
 pub struct Chunk {
     code: Vec<u8>,
-    constants: Vec<Value>,
+    constants: Vec<ChunkConstant>,
     lines: Vec<usize>,
+}
+
+impl fmt::Debug for ChunkConstant {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            ChunkConstant::Number(n) => write!(f, "{}", n),
+            ChunkConstant::String(s) => write!(f, "\"{}\"", s),
+            ChunkConstant::FnTemplate { name, .. } => write!(f, "<fn {}>", name),
+        }
+    }
 }
 
 impl Chunk {
@@ -82,7 +107,7 @@ impl Chunk {
         self.write_op_with_short(OpCode::Loop, jump_dist, line);
     }
 
-    pub fn add_constant(&mut self, constant: Value) -> ConstantIndex {
+    pub fn add_constant(&mut self, constant: ChunkConstant) -> ConstantIndex {
         self.constants.push(constant);
         let index = self.constants.len() - 1;
         index
@@ -90,8 +115,12 @@ impl Chunk {
             .expect("Constant array not large enough to handle this constant.")
     }
 
-    pub fn read_constant(&self, index: ConstantIndex) -> Value {
+    pub fn read_constant(&self, index: ConstantIndex) -> ChunkConstant {
         self.constants[index as usize].clone()
+    }
+
+    pub fn get_line(&self, index: usize) -> usize {
+        self.lines[index]
     }
 
     pub fn disassemble(&self, name: &str) {
@@ -134,6 +163,8 @@ impl Chunk {
                 return offset + 1;
             }
         };
+
+        let mut variable_args_size: Option<usize> = None;
 
         match opcode {
             OpCode::True => println!("OP_TRUE"),
@@ -187,11 +218,33 @@ impl Chunk {
                 let dist_in_bytes = self.read_short(offset + 1);
                 format_print_two!("OP_LOOP", dist_in_bytes);
             }
+            OpCode::Call => format_print_two!("OP_CALL", self.read_byte(offset + 1)),
             OpCode::Return => println!("OP_RETURN"),
             OpCode::Print => println!("OP_PRINT"),
             OpCode::Pop => println!("OP_POP"),
+            OpCode::MakeClosure => {
+                let index = self.read_byte(offset + 1);
+                let constant = self.read_constant(index);
+                let upvalue_count = match constant {
+                    ChunkConstant::FnTemplate { upvalue_count, .. } => upvalue_count,
+                    _ => todo!(),
+                };
+
+                format_print_three!("OP_MAKE_CLOSURE", index, constant);
+                variable_args_size = Some(1 + 2 * upvalue_count);
+            }
+            OpCode::GetUpvalue => {
+                let index = self.read_byte(offset + 1);
+                format_print_two!("OP_GET_UPVALUE", index);
+            }
+            OpCode::SetUpvalue => {
+                let index = self.read_byte(offset + 1);
+                format_print_two!("OP_SET_UPVALUE", index);
+            }
         };
 
-        offset + opcode.operand_size_in_bytes() + 1
+        let arg_bytes = variable_args_size.xor(opcode.operand_size_in_bytes());
+
+        offset + arg_bytes.expect("") + 1
     }
 }

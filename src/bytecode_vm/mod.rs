@@ -1,6 +1,8 @@
 mod chunk;
 mod compiler;
 mod errors;
+mod gc;
+mod native_function;
 mod opcode;
 mod string_interner;
 mod value;
