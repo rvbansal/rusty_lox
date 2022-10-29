@@ -13,6 +13,8 @@ pub enum VmError {
     NativeFnError(String),
     CannotParseConstant(ChunkConstant),
     CannotParseUpvalue,
+    NotAnInstance,
+    UnknownProperty,
 }
 
 #[derive(Debug)]

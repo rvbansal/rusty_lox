@@ -8,7 +8,7 @@ use super::value::{ActiveUpvalue, HeapObject, Value};
 
 use super::compiler::Upvalue;
 
-use core::num;
+
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -230,46 +230,62 @@ impl VM {
                     let index = self.frame_mut().read_byte() as usize;
                     self.stack[base_ptr + index] = value;
                 }
+                OpCode::Jump => {
+                    let jump_by = usize::from(self.frame_mut().read_short());
+                    self.frame_mut().ip += jump_by;
+                }
+                OpCode::JumpIfFalse => {
+                    let jump_by = usize::from(self.frame_mut().read_short());
+                    if !self.peek(0)?.is_truthy() {
+                        self.frame_mut().ip += jump_by;
+                    }
+                }
+                OpCode::Loop => {
+                    let jump_by = usize::from(self.frame_mut().read_short());
+                    self.frame_mut().ip -= jump_by;
+                }
                 OpCode::MakeClosure => {
                     let index = self.frame_mut().read_byte();
-                    let closure_obj = match self.frame().chunk.read_constant(index) {
-                        ChunkConstant::FnTemplate {
-                            name,
-                            arity,
-                            chunk,
-                            upvalue_count,
-                        } => {
-                            let mut upvalues = vec![];
-                            for i in 0..upvalue_count {
-                                let upvalue = match self.frame_mut().try_read_upvalue() {
-                                    Ok(uv) => match uv {
-                                        Upvalue::Immediate(index) => {
-                                            let upvalue = ActiveUpvalue::new(
-                                                self.frame().base_ptr + index as usize,
-                                            );
-                                            self.open_upvalues.push(upvalue.clone());
-                                            upvalue
-                                        }
-                                        Upvalue::Recursive(index) => {
-                                            self.frame().upvalues[index as usize].clone()
-                                        }
-                                    },
-                                    Err(_) => return Err(VmError::CannotParseUpvalue),
-                                };
-                                upvalues.push(upvalue);
-                            }
 
-                            HeapObject::LoxClosure {
+                    let (name, arity, chunk, upvalue_count) =
+                        match self.frame().chunk.read_constant(index) {
+                            ChunkConstant::FnTemplate {
                                 name,
                                 arity,
-                                chunk: chunk.clone(),
-                                upvalues: Rc::new(upvalues),
+                                chunk,
+                                upvalue_count,
+                            } => (name, arity, chunk, upvalue_count),
+                            _ => return Err(VmError::NotCallable),
+                        };
+
+                    let mut upvalues = Vec::with_capacity(upvalue_count);
+                    for _i in 0..upvalue_count {
+                        let upvalue = match self
+                            .frame_mut()
+                            .try_read_upvalue()
+                            .map_err(|_| VmError::CannotParseUpvalue)?
+                        {
+                            Upvalue::Immediate(index) => {
+                                let upvalue =
+                                    ActiveUpvalue::new(self.frame().base_ptr + index as usize);
+                                self.open_upvalues.push(upvalue.clone());
+                                upvalue
                             }
-                        }
-                        _ => return Err(VmError::NotCallable),
+                            Upvalue::Recursive(index) => {
+                                self.frame().upvalues[index as usize].clone()
+                            }
+                        };
+                        upvalues.push(upvalue);
+                    }
+
+                    let closure = HeapObject::LoxClosure {
+                        name,
+                        arity,
+                        chunk: chunk.clone(),
+                        upvalues: Rc::new(upvalues),
                     };
 
-                    let closure_value = self.make_heap_value(closure_obj);
+                    let closure_value = self.make_heap_value(closure);
                     self.push(closure_value);
                 }
                 OpCode::GetUpvalue => {
@@ -292,6 +308,58 @@ impl VM {
                     self.close_upvalues(self.stack.len() - 1);
                     self.pop()?;
                 }
+                OpCode::MakeClass => {
+                    let index = self.frame_mut().read_byte();
+                    let name = self.read_string(index);
+                    let klass = HeapObject::LoxClass { name };
+                    let klass_value = self.make_heap_value(klass);
+                    self.push(klass_value);
+                }
+                OpCode::GetProperty => {
+                    let ptr = self
+                        .peek(0)?
+                        .try_into_heap_object()
+                        .ok_or(VmError::NotAnInstance)?;
+
+                    match &*ptr.borrow() {
+                        HeapObject::LoxInstance { fields, .. } => {
+                            let index = self.frame_mut().read_byte();
+                            let name = self.read_string(index);
+                            let value = match fields.get(&name) {
+                                Some(value) => value,
+                                None => return Err(VmError::UnknownProperty),
+                            };
+
+                            self.pop()?;
+                            self.push(value.clone());
+                        }
+                        _ => return Err(VmError::NotAnInstance),
+                    };
+                }
+                OpCode::SetProperty => {
+                    let value = self.peek(0)?;
+                    let mut ptr = self
+                        .peek(1)?
+                        .try_into_heap_object()
+                        .ok_or(VmError::NotAnInstance)?;
+
+                    match &mut *ptr.borrow_mut() {
+                        HeapObject::LoxInstance { fields, .. } => {
+                            let index = self.frame_mut().read_byte();
+                            let name = self.read_string(index);
+                            fields.insert(name, value.clone());
+
+                            self.pop()?;
+                            self.pop()?;
+                            self.push(value.clone());
+                        }
+                        _ => return Err(VmError::NotAnInstance),
+                    };
+                }
+                OpCode::Call => {
+                    let num_args: usize = self.frame_mut().read_byte().into();
+                    self.call(self.peek(num_args)?, num_args)?;
+                }
                 OpCode::Return => {
                     let result = self.pop_frame()?;
 
@@ -308,24 +376,6 @@ impl VM {
                 OpCode::Pop => {
                     self.pop()?;
                 }
-                OpCode::Jump => {
-                    let jump_by = usize::from(self.frame_mut().read_short());
-                    self.frame_mut().ip += jump_by;
-                }
-                OpCode::JumpIfFalse => {
-                    let jump_by = usize::from(self.frame_mut().read_short());
-                    if !self.peek(0)?.is_truthy() {
-                        self.frame_mut().ip += jump_by;
-                    }
-                }
-                OpCode::Loop => {
-                    let jump_by = usize::from(self.frame_mut().read_short());
-                    self.frame_mut().ip -= jump_by;
-                }
-                OpCode::Call => {
-                    let num_args: usize = self.frame_mut().read_byte().into();
-                    self.call(self.peek(num_args)?, num_args)?;
-                }
             }
         }
     }
@@ -335,12 +385,9 @@ impl VM {
     }
 
     pub fn call(&mut self, callee: Value, num_args: usize) -> VmResult<()> {
-        let heap_obj_ref = match &callee {
-            Value::Object(gc_ptr) => gc_ptr.borrow(),
-            _ => return Err(VmError::NotCallable),
-        };
+        let ptr = callee.try_into_heap_object().ok_or(VmError::NotCallable)?;
 
-        match &*heap_obj_ref {
+        match &*ptr.borrow() {
             HeapObject::LoxClosure {
                 name,
                 arity,
@@ -352,7 +399,6 @@ impl VM {
                 }
                 self.push_new_frame(num_args, name.clone(), chunk.clone(), upvalues.clone());
             }
-
             HeapObject::NativeFn {
                 arity, function, ..
             } => {
@@ -370,6 +416,16 @@ impl VM {
                 self.stack.truncate(self.stack.len() - num_args - 1);
                 self.push(value);
             }
+            HeapObject::LoxClass { .. } => {
+                let instance = HeapObject::LoxInstance {
+                    class: ptr.clone(),
+                    fields: HashMap::new(),
+                };
+                let instance_value = self.make_heap_value(instance);
+                self.stack.truncate(self.stack.len() - num_args - 1);
+                self.push(instance_value);
+            }
+            HeapObject::LoxInstance { .. } => return Err(VmError::NotCallable),
         }
 
         Ok(())

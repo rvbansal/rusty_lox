@@ -146,6 +146,14 @@ impl Chunk {
             };
         }
 
+        macro_rules! format_print_with_constant {
+            ($op:expr) => {{
+                let index = self.read_byte(offset + 1);
+                let constant = self.read_constant(index);
+                format_print_three!($op, index, constant);
+            };};
+        }
+
         // Print byte offset and line.
         print!("{:4}", offset);
         if offset == 0 || self.lines[offset] != self.lines[offset - 1] {
@@ -170,11 +178,7 @@ impl Chunk {
             OpCode::True => println!("OP_TRUE"),
             OpCode::False => println!("OP_FALSE"),
             OpCode::Nil => println!("OP_NIL"),
-            OpCode::Constant => {
-                let index = self.read_byte(offset + 1);
-                let constant = self.read_constant(index);
-                format_print_three!("OP_CONSTANT", index, constant);
-            }
+            OpCode::Constant => format_print_with_constant!("OP_CONSTANT"),
             OpCode::Add => println!("OP_ADD"),
             OpCode::Subtract => println!("OP_SUBTRACT"),
             OpCode::Multiply => println!("OP_MULTIPLY"),
@@ -184,44 +188,16 @@ impl Chunk {
             OpCode::Equal => println!("OP_EQUAL"),
             OpCode::GreaterThan => println!("OP_GREATER"),
             OpCode::LessThan => println!("OP_LESS"),
-            OpCode::DefineGlobal => {
-                let index = self.read_byte(offset + 1);
-                let constant = self.read_constant(index);
-                format_print_three!("OP_DEFINE_GLOBAL", index, constant);
-            }
-            OpCode::GetGlobal => {
-                let index = self.read_byte(offset + 1);
-                let constant = self.read_constant(index);
-                format_print_three!("OP_GET_GLOBAL", index, constant);
-            }
-            OpCode::SetGlobal => {
-                let index = self.read_byte(offset + 1);
-                format_print_two!("OP_SET_GLOBAL", index);
-            }
-            OpCode::GetLocal => {
-                let index = self.read_byte(offset + 1);
-                format_print_two!("OP_GET_LOCAL", index);
-            }
-            OpCode::SetLocal => {
-                let index = self.read_byte(offset + 1);
-                format_print_two!("OP_SET_LOCAL", index);
-            }
-            OpCode::Jump => {
-                let dist_in_bytes = self.read_short(offset + 1);
-                format_print_two!("OP_JUMP", dist_in_bytes);
-            }
+            OpCode::DefineGlobal => format_print_with_constant!("OP_DEFINE_GLOBAL"),
+            OpCode::GetGlobal => format_print_with_constant!("OP_GET_GLOBAL"),
+            OpCode::SetGlobal => format_print_with_constant!("OP_SET_GLOBAL"),
+            OpCode::GetLocal => format_print_two!("OP_GET_LOCAL", self.read_byte(offset + 1)),
+            OpCode::SetLocal => format_print_two!("OP_SET_LOCAL", self.read_byte(offset + 1)),
+            OpCode::Jump => format_print_two!("OP_JUMP", self.read_short(offset + 1)),
             OpCode::JumpIfFalse => {
-                let dist_in_bytes = self.read_short(offset + 1);
-                format_print_two!("OP_JUMP_IF_FALSE", dist_in_bytes);
+                format_print_two!("OP_JUMP_IF_FALSE", self.read_short(offset + 1))
             }
-            OpCode::Loop => {
-                let dist_in_bytes = self.read_short(offset + 1);
-                format_print_two!("OP_LOOP", dist_in_bytes);
-            }
-            OpCode::Call => format_print_two!("OP_CALL", self.read_byte(offset + 1)),
-            OpCode::Return => println!("OP_RETURN"),
-            OpCode::Print => println!("OP_PRINT"),
-            OpCode::Pop => println!("OP_POP"),
+            OpCode::Loop => format_print_two!("OP_LOOP", self.read_short(offset + 1)),
             OpCode::MakeClosure => {
                 let index = self.read_byte(offset + 1);
                 let constant = self.read_constant(index);
@@ -243,15 +219,16 @@ impl Chunk {
                 }
                 variable_args_size = Some(1 + 2 * upvalue_count);
             }
-            OpCode::GetUpvalue => {
-                let index = self.read_byte(offset + 1);
-                format_print_two!("OP_GET_UPVALUE", index);
-            }
-            OpCode::SetUpvalue => {
-                let index = self.read_byte(offset + 1);
-                format_print_two!("OP_SET_UPVALUE", index);
-            }
+            OpCode::GetUpvalue => format_print_two!("OP_GET_UPVALUE", self.read_byte(offset + 1)),
+            OpCode::SetUpvalue => format_print_two!("OP_SET_UPVALUE", self.read_byte(offset + 1)),
             OpCode::CloseUpvalue => println!("OP_CLOSE_UPVALUE"),
+            OpCode::MakeClass => format_print_with_constant!("OP_MAKE_CLASS"),
+            OpCode::GetProperty => format_print_with_constant!("OP_GET_PROPERTY"),
+            OpCode::SetProperty => format_print_with_constant!("OP_SET_PROPERTY"),
+            OpCode::Call => format_print_two!("OP_CALL", self.read_byte(offset + 1)),
+            OpCode::Return => println!("OP_RETURN"),
+            OpCode::Print => println!("OP_PRINT"),
+            OpCode::Pop => println!("OP_POP"),
         };
 
         let arg_bytes = variable_args_size.xor(opcode.operand_size_in_bytes());

@@ -3,6 +3,7 @@ use super::gc::{GcPtr, Traceable};
 use super::string_interner::StringIntern;
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::fmt;
 use std::rc::Rc;
 
@@ -40,6 +41,13 @@ pub enum HeapObject {
         arity: usize,
         function: NativeFnType,
     },
+    LoxClass {
+        name: StringIntern,
+    },
+    LoxInstance {
+        class: GcPtr<HeapObject>,
+        fields: HashMap<StringIntern, Value>,
+    },
 }
 
 impl Value {
@@ -50,7 +58,14 @@ impl Value {
     pub fn mark_internals(&self) {
         match self {
             Value::Number(_) | Value::Boolean(_) | Value::Nil | Value::String(_) => {}
-            Value::Object(ptr) => ptr.mark()
+            Value::Object(ptr) => ptr.mark(),
+        }
+    }
+
+    pub fn try_into_heap_object(self) -> Option<GcPtr<HeapObject>> {
+        match self {
+            Value::Object(ptr) => Some(ptr),
+            _ => None,
         }
     }
 }
@@ -76,8 +91,8 @@ impl fmt::Debug for Value {
             Value::Nil => write!(f, "nil"),
             Value::Object(ptr) => match &*ptr.try_borrow() {
                 Some(obj) => obj.fmt(f),
-                None => write!(f, "<garbage>")
-            }
+                None => write!(f, "<garbage>"),
+            },
             Value::String(s) => s.fmt(f),
         }
     }
@@ -86,8 +101,10 @@ impl fmt::Debug for Value {
 impl fmt::Debug for HeapObject {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            HeapObject::LoxClosure { name, ..  } => write!(f, "<fn {}>", name),
-            HeapObject::NativeFn { name, ..  } => write!(f, "<native fn {}>", name),
+            HeapObject::LoxClosure { name, .. } => write!(f, "<fn {}>", name),
+            HeapObject::NativeFn { name, .. } => write!(f, "<native fn {}>", name),
+            HeapObject::LoxClass { name, .. } => write!(f, "{}", name),
+            HeapObject::LoxInstance { class, .. } => write!(f, "{:?} instance", class.borrow()),
         }
     }
 }
@@ -101,6 +118,13 @@ impl Traceable for HeapObject {
                 }
             }
             HeapObject::NativeFn { .. } => {}
+            HeapObject::LoxClass { .. } => {}
+            HeapObject::LoxInstance { class, fields, .. } => {
+                class.mark();
+                for field in fields.values() {
+                    field.mark_internals();
+                }
+            }
         }
     }
 }
@@ -142,7 +166,7 @@ impl ActiveUpvalue {
 
     pub fn mark_internals(&self) {
         match &*self.location.borrow() {
-            UpvalueType::Open(_) => {},
+            UpvalueType::Open(_) => {}
             UpvalueType::Closed(value) => value.mark_internals(),
         }
     }

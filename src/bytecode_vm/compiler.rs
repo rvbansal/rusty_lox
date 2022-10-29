@@ -1,9 +1,9 @@
 use crate::lox_frontend::grammar::{
-    Expr, ExprType, FuncInfo, Literal, Stmt, StmtType, VariableInfo,
+    Expr, ExprType, FuncInfo, Literal, Stmt, StmtType,
 };
 use crate::lox_frontend::operator::{InfixOperator, LogicalOperator, PrefixOperator};
 
-use super::chunk::{Chunk, ChunkConstant};
+use super::chunk::{Chunk, ChunkConstant, ConstantIndex};
 use super::errors::{CompilerError, CompilerResult};
 use super::opcode::OpCode;
 use super::string_interner::StringInterner;
@@ -177,7 +177,14 @@ impl<'s> Compiler<'s> {
                 self.compile_while(condition, body.as_ref())?;
             }
             StmtType::FuncDecl(fn_decl) => {
+                // Recursive functions can refer to themselves, so declare a local
+                // func with the correct name before compiling it.
+                self.declare_variable(&fn_decl.name)?;
+                if self.get_context().scope_depth != 0 {
+                    self.get_context_mut().mark_last_local_initialized();
+                }
                 self.compile_func_decl(fn_decl, line)?;
+                self.define_variable(&fn_decl.name, line)?;
             }
             StmtType::Return(expr) => {
                 match expr {
@@ -188,7 +195,13 @@ impl<'s> Compiler<'s> {
                 }
                 self.chunk().write_op(OpCode::Return, line);
             }
-            _ => panic!("Bytecode vm cannot compile this statement right now."),
+            StmtType::ClassDecl(name, _superclass, _methods) => {
+                self.declare_variable(name)?;
+                let index = self.add_string_constant(name);
+                self.chunk()
+                    .write_op_with_byte(OpCode::MakeClass, index, line);
+                self.define_variable(name, line)?;
+            }
         };
 
         Ok(())
@@ -201,8 +214,8 @@ impl<'s> Compiler<'s> {
             ExprType::Literal(l) => self.compile_literal(l, line),
             ExprType::Infix(op, lhs, rhs) => self.compile_infix(*op, lhs, rhs)?,
             ExprType::Prefix(op, expr) => self.compile_prefix(*op, expr)?,
-            ExprType::Variable(var) => self.get_variable(var, line)?,
-            ExprType::Assignment(var, expr) => self.set_variable(var, expr, line)?,
+            ExprType::Variable(var) => self.get_variable(&var.name, line)?,
+            ExprType::Assignment(var, expr) => self.set_variable(&var.name, expr, line)?,
             ExprType::Logical(op, lhs, rhs) => match op {
                 LogicalOperator::And => self.compile_and(lhs, rhs)?,
                 LogicalOperator::Or => self.compile_or(lhs, rhs)?,
@@ -218,6 +231,19 @@ impl<'s> Compiler<'s> {
                     line,
                 );
             }
+            ExprType::Get(expr, name) => {
+                let index = self.add_string_constant(name);
+                self.compile_expression(expr)?;
+                self.chunk()
+                    .write_op_with_byte(OpCode::GetProperty, index, line);
+            }
+            ExprType::Set(expr, name, value_expr) => {
+                let index = self.add_string_constant(name);
+                self.compile_expression(expr)?;
+                self.compile_expression(value_expr)?;
+                self.chunk()
+                    .write_op_with_byte(OpCode::SetProperty, index, line);
+            }
             _ => panic!("Bytecode vm cannot compile this expression right now."),
         }
 
@@ -225,13 +251,6 @@ impl<'s> Compiler<'s> {
     }
 
     fn compile_func_decl(&mut self, fn_decl: &FuncInfo, line: usize) -> CompilerResult<()> {
-        // Recursive functions can refer to themselves, so declare a local
-        // func with the correct name before compiling it.
-        self.declare_variable(&fn_decl.name)?;
-        if self.get_context().scope_depth != 0 {
-            self.get_context_mut().mark_last_local_initialized();
-        }
-
         // New compiler context for the function.
         self.context_stack.push(CompilerContext::new(""));
         self.begin_scope();
@@ -262,7 +281,7 @@ impl<'s> Compiler<'s> {
             chunk: Rc::new(fn_context.chunk),
             upvalue_count: fn_context.upvalues.len(),
         };
-        let index = self.chunk().add_constant(fn_template);
+        let index = self.add_constant(fn_template);
 
         self.chunk()
             .write_op_with_byte(OpCode::MakeClosure, index, line);
@@ -276,8 +295,6 @@ impl<'s> Compiler<'s> {
             self.chunk().write_byte(bytes[1], line);
         }
 
-        self.define_variable(&fn_decl.name, line)?;
-
         Ok(())
     }
 
@@ -285,7 +302,7 @@ impl<'s> Compiler<'s> {
         match l {
             Literal::Number(n) => {
                 let value = ChunkConstant::Number(*n);
-                let index = self.chunk().add_constant(value);
+                let index = self.add_constant(value);
                 self.chunk()
                     .write_op_with_byte(OpCode::Constant, index, line);
             }
@@ -301,7 +318,7 @@ impl<'s> Compiler<'s> {
             }
             Literal::Str(s) => {
                 let value = ChunkConstant::String(self.string_table.get_string_intern(s));
-                let index = self.chunk().add_constant(value);
+                let index = self.add_constant(value);
                 self.chunk()
                     .write_op_with_byte(OpCode::Constant, index, line);
             }
@@ -440,8 +457,7 @@ impl<'s> Compiler<'s> {
         if self.get_context().scope_depth == 0 {
             // Store the global var name as a string constant, so VM can
             // refer to it.
-            let value = ChunkConstant::String(self.string_table.get_string_intern(name));
-            let global_var_idx = self.chunk().add_constant(value);
+            let global_var_idx = self.add_string_constant(name);
             self.chunk()
                 .write_op_with_byte(OpCode::DefineGlobal, global_var_idx, line);
         } else {
@@ -451,12 +467,11 @@ impl<'s> Compiler<'s> {
         Ok(())
     }
 
-    fn get_variable(&mut self, var: &VariableInfo, line: usize) -> CompilerResult<()> {
-        match self.resolve_variable(&var.name)? {
+    fn get_variable(&mut self, var_name: &str, line: usize) -> CompilerResult<()> {
+        match self.resolve_variable(var_name)? {
             VariableLocator::Global => {
                 // Global variable.
-                let value = ChunkConstant::String(self.string_table.get_string_intern(&var.name));
-                let global_var_idx = self.chunk().add_constant(value);
+                let global_var_idx = self.add_string_constant(var_name);
                 self.chunk()
                     .write_op_with_byte(OpCode::GetGlobal, global_var_idx, line);
             }
@@ -474,13 +489,12 @@ impl<'s> Compiler<'s> {
         Ok(())
     }
 
-    fn set_variable(&mut self, var: &VariableInfo, expr: &Expr, line: usize) -> CompilerResult<()> {
+    fn set_variable(&mut self, var_name: &str, expr: &Expr, line: usize) -> CompilerResult<()> {
         self.compile_expression(expr)?;
 
-        match self.resolve_variable(&var.name)? {
+        match self.resolve_variable(var_name)? {
             VariableLocator::Global => {
-                let value = ChunkConstant::String(self.string_table.get_string_intern(&var.name));
-                let global_var_idx = self.chunk().add_constant(value);
+                let global_var_idx = self.add_string_constant(var_name);
                 self.chunk()
                     .write_op_with_byte(OpCode::SetGlobal, global_var_idx, line);
             }
@@ -495,6 +509,15 @@ impl<'s> Compiler<'s> {
         }
 
         Ok(())
+    }
+
+    fn add_constant(&mut self, constant: ChunkConstant) -> ConstantIndex {
+        self.chunk().add_constant(constant)
+    }
+
+    fn add_string_constant(&mut self, name: &str) -> ConstantIndex {
+        let constant = ChunkConstant::String(self.string_table.get_string_intern(name));
+        self.chunk().add_constant(constant)
     }
 
     fn get_context(&self) -> &CompilerContext {
