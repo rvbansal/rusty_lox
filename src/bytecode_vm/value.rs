@@ -46,6 +46,13 @@ impl Value {
     pub fn is_truthy(&self) -> bool {
         !matches!(self, Value::Nil | Value::Boolean(false))
     }
+
+    pub fn mark_internals(&self) {
+        match self {
+            Value::Number(_) | Value::Boolean(_) | Value::Nil | Value::String(_) => {}
+            Value::Object(ptr) => ptr.mark()
+        }
+    }
 }
 
 impl PartialEq<Value> for Value {
@@ -67,8 +74,20 @@ impl fmt::Debug for Value {
             Value::Number(n) => n.fmt(f),
             Value::Boolean(b) => b.fmt(f),
             Value::Nil => write!(f, "nil"),
-            Value::Object(obj) => write!(f, "(heap) {:?}", obj),
+            Value::Object(ptr) => match &*ptr.try_borrow() {
+                Some(obj) => obj.fmt(f),
+                None => write!(f, "<garbage>")
+            }
             Value::String(s) => s.fmt(f),
+        }
+    }
+}
+
+impl fmt::Debug for HeapObject {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            HeapObject::LoxClosure { name, ..  } => write!(f, "<fn {}>", name),
+            HeapObject::NativeFn { name, ..  } => write!(f, "<native fn {}>", name),
         }
     }
 }
@@ -76,7 +95,11 @@ impl fmt::Debug for Value {
 impl Traceable for HeapObject {
     fn trace(&self) {
         match self {
-            HeapObject::LoxClosure { .. } => {}
+            HeapObject::LoxClosure { upvalues, .. } => {
+                for uv in upvalues.iter() {
+                    uv.mark_internals();
+                }
+            }
             HeapObject::NativeFn { .. } => {}
         }
     }
@@ -114,6 +137,13 @@ impl ActiveUpvalue {
         match &*self.location.borrow() {
             UpvalueType::Open(index) => Some(*index),
             UpvalueType::Closed(_) => None,
+        }
+    }
+
+    pub fn mark_internals(&self) {
+        match &*self.location.borrow() {
+            UpvalueType::Open(_) => {},
+            UpvalueType::Closed(value) => value.mark_internals(),
         }
     }
 }

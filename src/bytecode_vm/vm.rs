@@ -8,8 +8,11 @@ use super::value::{ActiveUpvalue, HeapObject, Value};
 
 use super::compiler::Upvalue;
 
+use core::num;
 use std::collections::HashMap;
 use std::rc::Rc;
+
+const GC_CYCLES_PERIOD: u32 = 1000;
 
 struct CallFrame {
     ip: usize,
@@ -112,7 +115,15 @@ impl VM {
     }
 
     fn run(&mut self) -> VmResult<()> {
+        let mut num_cycles = 0;
+
         loop {
+            if num_cycles == GC_CYCLES_PERIOD {
+                self.run_garbage_collection();
+                num_cycles = 0;
+            }
+            num_cycles += 1;
+
             #[cfg(feature = "trace-execution")]
             {
                 let frame = self.frame_mut();
@@ -448,6 +459,25 @@ impl VM {
 
     pub fn insert_into_heap(&mut self, obj: HeapObject) -> GcPtr<HeapObject> {
         self.heap.insert(obj)
+    }
+
+    fn run_garbage_collection(&mut self) {
+        // Values on stack are reachable.
+        for value in self.stack.iter() {
+            value.mark_internals();
+        }
+
+        // Globals are reachable.
+        for value in self.globals.values() {
+            value.mark_internals();
+        }
+
+        // Call frames and open upvalues contain reachable objects, but only
+        // through objects also reachable through the corresponding closure.
+        // Since closure is on the stack, all of those are already reachable.
+
+        self.heap.sweep();
+        self.string_table.sweep();
     }
 
     fn run_add(&mut self) -> VmResult<()> {

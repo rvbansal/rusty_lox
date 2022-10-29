@@ -36,7 +36,7 @@ impl StringInterner {
         self.get_string_intern(string);
     }
 
-    pub fn remove_no_ref_strings(&mut self) {
+    pub fn sweep(&mut self) {
         self.table.retain(|rc| Rc::strong_count(rc) > 1);
     }
 
