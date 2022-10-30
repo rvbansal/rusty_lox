@@ -1,5 +1,6 @@
 use super::chunk::Chunk;
 use super::gc::{GcPtr, Traceable};
+use super::native_function::NativeFn;
 use super::string_interner::StringIntern;
 
 use std::cell::RefCell;
@@ -7,16 +8,40 @@ use std::collections::HashMap;
 use std::fmt;
 use std::rc::Rc;
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub enum Value {
     Number(f64),
     Boolean(bool),
     Nil,
-    Object(GcPtr<HeapObject>),
     String(StringIntern),
+    Closure(GcPtr<LoxClosure>),
+    NativeFn(NativeFn),
+    Class(GcPtr<LoxClass>),
+    Instance(GcPtr<LoxInstance>),
+    BoundMethod(GcPtr<LoxBoundMethod>),
 }
 
-pub type NativeFnType = fn(&[Value]) -> Result<Value, String>;
+pub struct LoxClosure {
+    pub name: StringIntern,
+    pub arity: usize,
+    pub chunk: Rc<Chunk>,
+    pub upvalues: Rc<Vec<ActiveUpvalue>>,
+}
+
+pub struct LoxClass {
+    pub name: StringIntern,
+    pub methods: HashMap<StringIntern, GcPtr<LoxClosure>>,
+}
+
+pub struct LoxInstance {
+    pub class: GcPtr<LoxClass>,
+    pub fields: HashMap<StringIntern, Value>,
+}
+
+pub struct LoxBoundMethod {
+    pub receiver: GcPtr<LoxInstance>,
+    pub closure: GcPtr<LoxClosure>,
+}
 
 #[derive(Clone)]
 pub enum UpvalueType {
@@ -29,27 +54,6 @@ pub struct ActiveUpvalue {
     location: Rc<RefCell<UpvalueType>>,
 }
 
-pub enum HeapObject {
-    LoxClosure {
-        name: StringIntern,
-        arity: usize,
-        chunk: Rc<Chunk>,
-        upvalues: Rc<Vec<ActiveUpvalue>>,
-    },
-    NativeFn {
-        name: StringIntern,
-        arity: usize,
-        function: NativeFnType,
-    },
-    LoxClass {
-        name: StringIntern,
-    },
-    LoxInstance {
-        class: GcPtr<HeapObject>,
-        fields: HashMap<StringIntern, Value>,
-    },
-}
-
 impl Value {
     pub fn is_truthy(&self) -> bool {
         !matches!(self, Value::Nil | Value::Boolean(false))
@@ -58,74 +62,99 @@ impl Value {
     pub fn mark_internals(&self) {
         match self {
             Value::Number(_) | Value::Boolean(_) | Value::Nil | Value::String(_) => {}
-            Value::Object(ptr) => ptr.mark(),
-        }
-    }
-
-    pub fn try_into_heap_object(self) -> Option<GcPtr<HeapObject>> {
-        match self {
-            Value::Object(ptr) => Some(ptr),
-            _ => None,
-        }
-    }
-}
-
-impl PartialEq<Value> for Value {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Value::Number(x), Value::Number(y)) => x == y,
-            (Value::Boolean(x), Value::Boolean(y)) => x == y,
-            (Value::Nil, Value::Nil) => true,
-            (Value::Object(x), Value::Object(y)) => x == y,
-            (Value::String(x), Value::String(y)) => x == y,
-            _ => false,
+            Value::Closure(ptr) => ptr.mark(),
+            Value::NativeFn(_) => {}
+            Value::Class(ptr) => ptr.mark(),
+            Value::Instance(ptr) => ptr.mark(),
+            Value::BoundMethod(ptr) => ptr.mark(),
         }
     }
 }
 
 impl fmt::Debug for Value {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        macro_rules! fmt_or_garbage {
+            ($ptr:expr, $f:expr) => {
+                match &*$ptr.try_borrow() {
+                    Some(obj) => obj.fmt($f),
+                    None => write!($f, "<garbage>"),
+                }
+            };
+        }
+
         match self {
             Value::Number(n) => n.fmt(f),
             Value::Boolean(b) => b.fmt(f),
             Value::Nil => write!(f, "nil"),
-            Value::Object(ptr) => match &*ptr.try_borrow() {
-                Some(obj) => obj.fmt(f),
-                None => write!(f, "<garbage>"),
-            },
             Value::String(s) => s.fmt(f),
+            Value::Closure(ptr) => fmt_or_garbage!(ptr, f),
+            Value::NativeFn(func) => func.fmt(f),
+            Value::Class(ptr) => fmt_or_garbage!(ptr, f),
+            Value::Instance(ptr) => fmt_or_garbage!(ptr, f),
+            Value::BoundMethod(ptr) => fmt_or_garbage!(ptr, f),
         }
     }
 }
 
-impl fmt::Debug for HeapObject {
+impl fmt::Debug for LoxClosure {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            HeapObject::LoxClosure { name, .. } => write!(f, "<fn {}>", name),
-            HeapObject::NativeFn { name, .. } => write!(f, "<native fn {}>", name),
-            HeapObject::LoxClass { name, .. } => write!(f, "{}", name),
-            HeapObject::LoxInstance { class, .. } => write!(f, "{:?} instance", class.borrow()),
+        write!(f, "<fn {}>", self.name)
+    }
+}
+
+impl fmt::Debug for NativeFn {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "<fn {}>", self.data.name)
+    }
+}
+
+impl fmt::Debug for LoxClass {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.name)
+    }
+}
+
+impl fmt::Debug for LoxInstance {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "instance of {:?}", self.class.borrow())
+    }
+}
+
+impl fmt::Debug for LoxBoundMethod {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        self.closure.borrow().fmt(f)
+    }
+}
+
+impl Traceable for LoxClosure {
+    fn trace(&self) {
+        for uv in self.upvalues.iter() {
+            uv.mark_internals();
         }
     }
 }
 
-impl Traceable for HeapObject {
+impl Traceable for LoxClass {
     fn trace(&self) {
-        match self {
-            HeapObject::LoxClosure { upvalues, .. } => {
-                for uv in upvalues.iter() {
-                    uv.mark_internals();
-                }
-            }
-            HeapObject::NativeFn { .. } => {}
-            HeapObject::LoxClass { .. } => {}
-            HeapObject::LoxInstance { class, fields, .. } => {
-                class.mark();
-                for field in fields.values() {
-                    field.mark_internals();
-                }
-            }
+        for method in self.methods.values() {
+            method.mark();
         }
+    }
+}
+
+impl Traceable for LoxInstance {
+    fn trace(&self) {
+        self.class.mark();
+        for field in self.fields.values() {
+            field.mark_internals();
+        }
+    }
+}
+
+impl Traceable for LoxBoundMethod {
+    fn trace(&self) {
+        self.receiver.mark();
+        self.closure.mark();
     }
 }
 

@@ -31,6 +31,8 @@ pub enum OpCode {
     MakeClass,
     GetProperty,
     SetProperty,
+    MakeMethod,
+    Invoke,
     Call,
     Return,
     Print,
@@ -56,6 +58,8 @@ impl OpCode {
             OpCode::CloseUpvalue => 0,
             OpCode::MakeClass => 1,
             OpCode::GetProperty | OpCode::SetProperty => 1,
+            OpCode::MakeMethod => 1,
+            OpCode::Invoke => 2,
             OpCode::Return | OpCode::Print | OpCode::Pop => 0,
             OpCode::Call => 1,
         };

@@ -15,6 +15,8 @@ pub enum VmError {
     CannotParseUpvalue,
     NotAnInstance,
     UnknownProperty,
+    NotAClass,
+    NoArgumentInitializer,
 }
 
 #[derive(Debug)]

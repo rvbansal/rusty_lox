@@ -1,6 +1,4 @@
-use crate::lox_frontend::grammar::{
-    Expr, ExprType, FuncInfo, Literal, Stmt, StmtType,
-};
+use crate::lox_frontend::grammar::{Expr, ExprType, FuncInfo, Literal, Stmt, StmtType};
 use crate::lox_frontend::operator::{InfixOperator, LogicalOperator, PrefixOperator};
 
 use super::chunk::{Chunk, ChunkConstant, ConstantIndex};
@@ -18,6 +16,9 @@ type LocalIndex = u8;
 const MAX_UPVALUES: usize = 256;
 type UpvalueIndex = u8;
 
+const THIS_STR: &str = "this";
+const INIT_STR: &str = "init";
+
 #[derive(Clone, PartialEq, Eq)]
 pub enum Upvalue {
     Immediate(LocalIndex),
@@ -28,6 +29,13 @@ enum VariableLocator {
     Local(LocalIndex),
     Upvalue(UpvalueIndex),
     Global,
+}
+
+#[derive(PartialEq, Eq)]
+enum FunctionType {
+    Function,
+    Method,
+    Initializer,
 }
 
 struct Local {
@@ -42,6 +50,7 @@ struct CompilerContext {
     locals: Vec<Local>,
     upvalues: Vec<Upvalue>,
     scope_depth: u32,
+    is_initializer: bool,
 }
 
 pub struct Compiler<'s> {
@@ -54,7 +63,7 @@ impl CompilerContext {
         let reserved_local = Local {
             name: reserved_name.to_owned(),
             scope_depth: 0,
-            initialized: false,
+            initialized: true,
             captured: false,
         };
         CompilerContext {
@@ -62,6 +71,7 @@ impl CompilerContext {
             locals: vec![reserved_local],
             upvalues: vec![],
             scope_depth: 0,
+            is_initializer: false,
         }
     }
 
@@ -183,7 +193,7 @@ impl<'s> Compiler<'s> {
                 if self.get_context().scope_depth != 0 {
                     self.get_context_mut().mark_last_local_initialized();
                 }
-                self.compile_func_decl(fn_decl, line)?;
+                self.compile_func_decl(fn_decl, line, FunctionType::Function)?;
                 self.define_variable(&fn_decl.name, line)?;
             }
             StmtType::Return(expr) => {
@@ -191,16 +201,44 @@ impl<'s> Compiler<'s> {
                     Some(expr) => {
                         self.compile_expression(expr)?;
                     }
-                    None => self.chunk().write_op(OpCode::Nil, line),
+                    None => {
+                        self.emit_default_return(line);
+                    }
                 }
                 self.chunk().write_op(OpCode::Return, line);
             }
-            StmtType::ClassDecl(name, _superclass, _methods) => {
+            StmtType::ClassDecl(name, _superclass, methods) => {
                 self.declare_variable(name)?;
                 let index = self.add_string_constant(name);
                 self.chunk()
                     .write_op_with_byte(OpCode::MakeClass, index, line);
                 self.define_variable(name, line)?;
+                // Put class on stack
+                self.get_variable(name, line);
+
+                // Put methods on stack
+                for method in methods.iter() {
+                    let method_type = if method.name == INIT_STR {
+                        FunctionType::Initializer
+                    } else {
+                        FunctionType::Method
+                    };
+
+                    self.compile_func_decl(
+                        &method,
+                        method.body.span.start_pos.line_no,
+                        method_type,
+                    )?;
+                    let index = self.add_string_constant(&method.name);
+                    self.chunk().write_op_with_byte(
+                        OpCode::MakeMethod,
+                        index,
+                        method.body.span.end_pos.line_no,
+                    );
+                }
+
+                // Pop class of stack
+                self.chunk().write_op(OpCode::Pop, line);
             }
         };
 
@@ -220,17 +258,7 @@ impl<'s> Compiler<'s> {
                 LogicalOperator::And => self.compile_and(lhs, rhs)?,
                 LogicalOperator::Or => self.compile_or(lhs, rhs)?,
             },
-            ExprType::Call(callee, args) => {
-                self.compile_expression(callee.as_ref())?;
-                for arg in args.iter() {
-                    self.compile_expression(arg)?;
-                }
-                self.chunk().write_op_with_byte(
-                    OpCode::Call,
-                    u8::try_from(args.len()).expect("Too many function arguments."),
-                    line,
-                );
-            }
+            ExprType::Call(callee, args) => self.compile_call(callee, args)?,
             ExprType::Get(expr, name) => {
                 let index = self.add_string_constant(name);
                 self.compile_expression(expr)?;
@@ -244,15 +272,31 @@ impl<'s> Compiler<'s> {
                 self.chunk()
                     .write_op_with_byte(OpCode::SetProperty, index, line);
             }
+            ExprType::This(_) => {
+                self.get_variable(THIS_STR, line)?;
+            }
             _ => panic!("Bytecode vm cannot compile this expression right now."),
         }
 
         Ok(())
     }
 
-    fn compile_func_decl(&mut self, fn_decl: &FuncInfo, line: usize) -> CompilerResult<()> {
+    fn compile_func_decl(
+        &mut self,
+        fn_decl: &FuncInfo,
+        line: usize,
+        func_type: FunctionType,
+    ) -> CompilerResult<()> {
         // New compiler context for the function.
-        self.context_stack.push(CompilerContext::new(""));
+        let mut func_context = CompilerContext::new(match func_type {
+            FunctionType::Function => "",
+            FunctionType::Method | FunctionType::Initializer => THIS_STR,
+        });
+        if func_type == FunctionType::Initializer {
+            func_context.is_initializer = true;
+        }
+
+        self.context_stack.push(func_context);
         self.begin_scope();
 
         // Declare and define arguments.
@@ -263,10 +307,9 @@ impl<'s> Compiler<'s> {
 
         // Compile function.
         self.compile_statement(fn_decl.body.as_ref())?;
-        self.chunk()
-            .write_op(OpCode::Nil, fn_decl.body.span.end_pos.line_no);
-        self.chunk()
-            .write_op(OpCode::Return, fn_decl.body.span.end_pos.line_no);
+        let last_line = fn_decl.body.span.end_pos.line_no;
+        self.emit_default_return(last_line);
+        self.chunk().write_op(OpCode::Return, last_line);
 
         // No need to end scope b/c we will pop off function context all together.
         // Build function data.
@@ -443,6 +486,34 @@ impl<'s> Compiler<'s> {
         Ok(())
     }
 
+    fn compile_call(&mut self, callee: &Expr, args: &Vec<Expr>) -> CompilerResult<()> {
+        let num_args = u8::try_from(args.len()).expect("Too many function arguments.");
+        let line = callee.span.start_pos.line_no;
+
+        if let ExprType::Get(instance_expr, method_name) = &callee.expr {
+            // Method on an instance, we use invoke.
+
+            self.compile_expression(instance_expr)?;
+            for arg in args.iter() {
+                self.compile_expression(arg)?;
+            }
+            let index = self.add_string_constant(method_name);
+
+            self.chunk().write_op(OpCode::Invoke, line);
+            self.chunk().write_byte(index, line);
+            self.chunk().write_byte(num_args, line);
+        } else {
+            self.compile_expression(callee)?;
+            for arg in args.iter() {
+                self.compile_expression(arg)?;
+            }
+            self.chunk()
+                .write_op_with_byte(OpCode::Call, num_args, line);
+        }
+
+        Ok(())
+    }
+
     fn declare_variable(&mut self, name: &str) -> CompilerResult<()> {
         if self.get_context().scope_depth == 0 {
         } else {
@@ -587,6 +658,14 @@ impl<'s> Compiler<'s> {
         }
 
         Ok(VariableLocator::Upvalue(upvalue_index))
+    }
+
+    fn emit_default_return(&mut self, line: usize) {
+        if self.get_context().is_initializer {
+            self.chunk().write_op_with_byte(OpCode::GetLocal, 0, line);
+        } else {
+            self.chunk().write_op(OpCode::Nil, line);
+        }
     }
 
     fn print_chunk(&self, _name: &str, _chunk: &Chunk) {

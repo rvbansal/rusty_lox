@@ -142,7 +142,7 @@ impl Chunk {
 
         macro_rules! format_print_three {
             ($first:expr, $second:expr, $third:expr) => {
-                println!("{:20} {:4} {:?}", $first, $second, $third)
+                println!("{:20} {:04?} {:?}", $first, $second, $third)
             };
         }
 
@@ -225,6 +225,13 @@ impl Chunk {
             OpCode::MakeClass => format_print_with_constant!("OP_MAKE_CLASS"),
             OpCode::GetProperty => format_print_with_constant!("OP_GET_PROPERTY"),
             OpCode::SetProperty => format_print_with_constant!("OP_SET_PROPERTY"),
+            OpCode::MakeMethod => format_print_with_constant!("OP_MAKE_METHOD"),
+            OpCode::Invoke => {
+                let index = self.read_byte(offset + 1);
+                let method_name = self.read_constant(index);
+                let num_args = self.read_byte(offset + 2);
+                format_print_three!("OP_INVOKE", method_name, num_args);
+            }
             OpCode::Call => format_print_two!("OP_CALL", self.read_byte(offset + 1)),
             OpCode::Return => println!("OP_RETURN"),
             OpCode::Print => println!("OP_PRINT"),
