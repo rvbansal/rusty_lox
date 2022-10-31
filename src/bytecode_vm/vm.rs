@@ -358,7 +358,7 @@ impl VM {
                             chunk,
                             upvalue_count,
                         } => (name, arity, chunk, upvalue_count),
-                        _ => return Err(VmError::NotCallable),
+                        _ => return Err(VmError::NotACallable),
                     };
 
                     let mut upvalues = Vec::with_capacity(upvalue_count);
@@ -412,11 +412,7 @@ impl VM {
                 }
                 OpCode::GetProperty => {
                     let name = self.read_index_as_string();
-
-                    let instance_ptr = match self.stack.peek(0)? {
-                        Value::Instance(ptr) => ptr,
-                        _ => return Err(VmError::NotAnInstance),
-                    };
+                    let instance_ptr = self.stack.peek(0)?.to_instance()?;
 
                     let value = match instance_ptr.borrow().search(&name) {
                         PropertySearch::Field(value) => value,
@@ -431,32 +427,17 @@ impl VM {
                 }
                 OpCode::SetProperty => {
                     let name = self.read_index_as_string();
-                    let value = self.stack.peek(0)?;
-
-                    let mut instance_ptr = match self.stack.peek(1)? {
-                        Value::Instance(ptr) => ptr.clone(),
-                        _ => return Err(VmError::NotAnInstance),
-                    };
-                    let mut instance = instance_ptr.borrow_mut();
-
-                    let value = value.clone();
-                    instance.fields.insert(name, value.clone());
-
+                    let value = self.stack.peek(0)?.clone();
+                    let mut instance_ptr = self.stack.peek(1)?.to_instance()?;
+                    instance_ptr.borrow_mut().fields.insert(name, value.clone());
                     self.stack.pop()?;
                     self.stack.pop()?;
                     self.stack.push(value);
                 }
                 OpCode::MakeMethod => {
                     let method_name = self.read_index_as_string();
-
-                    let method_ptr = match self.stack.peek(0)? {
-                        Value::Closure(ptr) => ptr.clone(),
-                        _ => return Err(VmError::NotCallable),
-                    };
-                    let mut class_ptr = match self.stack.peek(1)? {
-                        Value::Class(ptr) => ptr.clone(),
-                        _ => return Err(VmError::NotAClass),
-                    };
+                    let method_ptr = self.stack.peek(0)?.to_closure()?;
+                    let mut class_ptr = self.stack.peek(1)?.to_class()?;
                     class_ptr
                         .borrow_mut()
                         .methods
@@ -468,50 +449,31 @@ impl VM {
                     let method_name = self.read_index_as_string();
                     let num_args: usize = self.read_byte().into();
 
-                    let receiver_ptr = match self.stack.peek(num_args)? {
-                        Value::Instance(ptr) => ptr,
-                        _ => return Err(VmError::NotAnInstance),
-                    };
-
-                    let search_result = receiver_ptr.borrow().search(&method_name);
-
-                    match search_result {
+                    let receiver_ptr = self.stack.peek(num_args)?.to_instance()?;
+                    match receiver_ptr.borrow().search(&method_name) {
                         PropertySearch::Field(value) => {
                             self.stack.set_back(num_args, value)?;
                             self.call(num_args)?;
                         }
                         PropertySearch::Method(method) => self.call_closure(method, num_args)?,
                         PropertySearch::Missing => return Err(VmError::UnknownProperty),
-                    }
+                    };
                 }
                 OpCode::Inherit => {
-                    let superclass_ptr = match self.stack.peek(1)? {
-                        Value::Class(ptr) => ptr.clone(),
-                        _ => return Err(VmError::NotAClass),
-                    };
-
-                    let mut class_ptr = match self.stack.peek(0)? {
-                        Value::Class(ptr) => ptr.clone(),
-                        _ => return Err(VmError::NotAClass),
-                    };
+                    let superclass_ptr = self.stack.peek(1)?.to_class()?;
+                    let mut class_ptr = self.stack.peek(0)?.to_class()?;
 
                     let methods = superclass_ptr.borrow().methods.clone();
                     class_ptr.borrow_mut().methods = methods;
                 }
                 OpCode::GetSuper => {
                     let method_name = self.read_index_as_string();
+                    let class_ptr = self.stack.peek(0)?.to_class()?;
+                    let instance_ptr = self.stack.peek(1)?.to_instance()?;
 
-                    let method_ptr = match self.stack.peek(0)? {
-                        Value::Class(ptr) => match ptr.borrow().methods.get(&method_name) {
-                            Some(method_ptr) => method_ptr.clone(),
-                            None => return Err(VmError::UnknownProperty),
-                        },
-                        _ => return Err(VmError::NotAClass),
-                    };
-
-                    let instance_ptr = match self.stack.peek(1)? {
-                        Value::Instance(ptr) => ptr,
-                        _ => return Err(VmError::NotAnInstance),
+                    let method_ptr = match class_ptr.borrow().methods.get(&method_name) {
+                        Some(ptr) => ptr.clone(),
+                        None => return Err(VmError::UnknownProperty),
                     };
 
                     let value = self
@@ -525,16 +487,14 @@ impl VM {
                 OpCode::InvokeSuper => {
                     let method_name = self.read_index_as_string();
                     let num_args: usize = self.read_byte().into();
-
-                    let superclass_ptr = match self.stack.pop()? {
-                        Value::Class(ptr) => ptr,
-                        _ => return Err(VmError::NotAClass),
-                    };
+                    let superclass_ptr = self.stack.pop()?.to_class()?;
 
                     match superclass_ptr.borrow().methods.get(&method_name) {
                         Some(method) => self.call_closure(method.clone(), num_args)?,
                         None => return Err(VmError::UnknownProperty),
                     };
+
+                    self.stack.pop()?;
                 }
                 OpCode::Call => {
                     let num_args: usize = self.read_byte().into();
@@ -600,7 +560,7 @@ impl VM {
                 self.stack.set_back(num_args, receiver)?;
                 self.call_closure(bound_method.closure.clone(), num_args)
             }
-            _ => Err(VmError::NotCallable),
+            _ => Err(VmError::NotACallable),
         }
     }
 
@@ -693,7 +653,7 @@ impl VM {
 
     fn make_open_value(&mut self, stack_index: usize) -> UpvaluePtr {
         // Sibling closures need to share an upvalue, so we first
-        // check if already exists and clone it. Otherwise, create a new one. 
+        // check if already exists and clone it. Otherwise, create a new one.
 
         fn index_match(upvalue: &UpvaluePtr, stack_index: usize) -> bool {
             stack_index
@@ -704,7 +664,8 @@ impl VM {
 
         match self
             .open_upvalues
-            .iter().find(|uv| index_match(uv, stack_index))
+            .iter()
+            .find(|uv| index_match(uv, stack_index))
         {
             Some(upvalue) => upvalue.clone(),
             None => {

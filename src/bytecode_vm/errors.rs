@@ -9,14 +9,15 @@ pub enum VmError {
     WrongOperandType,
     UndefinedGlobal(String),
     WrongArity,
-    NotCallable,
     NativeFnError(String),
     CannotParseConstant(ChunkConstant),
     CannotParseUpvalue,
-    NotAnInstance,
     UnknownProperty,
-    NotAClass,
     NoArgumentInitializer,
+    NotACallable,
+    NotAnInstance,
+    NotAClass,
+    NotAClosure,
 }
 
 #[derive(Debug)]

@@ -1,17 +1,15 @@
 use super::constants::{MAX_FUNC_ARGS, SUPER_STR, THIS_STR};
 use super::grammar::{Expr, ExprType, FuncInfo, Literal, Stmt, StmtType, VariableInfo};
+use super::lexer::Lexer;
 use super::operator::{InfixOperator, LogicalOperator, Precedence, PrefixOperator};
 use super::span::{CodePosition, Span};
 use super::token::{SpannedToken, Token};
 
-use std::iter::Peekable;
-
-pub struct Parser<T>
-where
-    T: Iterator<Item = SpannedToken>,
-{
-    tokens: Peekable<T>,
-    prev_span: Span,
+pub struct Parser<'s> {
+    source: &'s str,
+    lexer: Lexer<'s>,
+    current: SpannedToken,
+    previous: SpannedToken,
 }
 
 #[derive(Debug)]
@@ -25,51 +23,33 @@ pub enum ParserError {
 
 pub type ParserResult<T> = Result<T, ParserError>;
 
-impl<T> Parser<T>
-where
-    T: Iterator<Item = SpannedToken>,
-{
-    pub fn new(tokens: T) -> Self {
-        Parser {
-            tokens: tokens.peekable(),
-            prev_span: Span::default(),
-        }
+impl<'s> Parser<'s> {
+    pub fn new(source: &'s str) -> Self {
+        let dummy_token = SpannedToken {
+            token: Token::LexerError("<parser token>".to_owned()),
+            span: Span::default(),
+        };
+
+        let mut parser = Parser {
+            source,
+            lexer: Lexer::new(source),
+            current: dummy_token.clone(),
+            previous: dummy_token,
+        };
+
+        parser.bump();
+        parser
     }
 
-    /// Peeks current token.
-    fn peek_token(&mut self) -> SpannedToken {
-        match self.tokens.peek() {
-            Some(t) => t.clone(),
-            None => panic!("Went beyond EOF."),
-        }
-    }
-
-    /// Returns current token and advances stream.
-    fn take_token(&mut self) -> SpannedToken {
-        match self.tokens.next() {
-            Some(t) => {
-                self.prev_span = t.span;
-                t
-            }
-            None => panic!("Went beyond EOF."),
-        }
-    }
-
-    // Returns current span.
-    fn current_span(&mut self) -> Span {
-        self.peek_token().span
-    }
-
-    /// Advances the stream, erroring if we're at end of file.
+    /// Advances the stream.
     fn bump(&mut self) {
-        if self.take_token().token == Token::EndOfFile {
-            panic!("Went beyond EOF.")
-        }
+        std::mem::swap(&mut self.previous, &mut self.current);
+        self.current = self.lexer.next_token();
     }
 
     /// Checks whether or not the current token matches the given token.
     fn check(&mut self, t: Token) -> bool {
-        self.peek_token().token == t
+        self.current.token == t
     }
 
     /// Checks whether or not the current token matches the given token.
@@ -85,15 +65,15 @@ where
     /// Checks whether or not the current token matches the given token.
     /// If true consume it, else return Error.
     fn consume(&mut self, t: Token) -> ParserResult<()> {
-        let token = self.take_token();
+        self.bump();
 
-        if token.token == t {
+        if self.previous.token == t {
             Ok(())
         } else {
             Err(ParserError::ExpectedToken(
                 t,
-                token.span.start_pos,
-                token.token,
+                self.previous.span.start_pos,
+                self.previous.token.clone(),
             ))
         }
     }
@@ -113,10 +93,9 @@ where
     /// Handle variable declations separately from non-declaring statements since
     /// they may not be allowed everywhere non-declaring statements are allowed.
     fn parse_declaration(&mut self) -> ParserResult<Stmt> {
-        let token = self.peek_token();
-        let curr_span = token.span;
+        let curr_span = self.current.span;
 
-        match token.token {
+        match self.current.token {
             Token::Var => {
                 self.bump();
                 let name = self.parse_identifier()?;
@@ -129,7 +108,7 @@ where
 
                 Ok(to_stmt(
                     StmtType::VariableDecl(name, expr),
-                    curr_span.extend(self.prev_span),
+                    curr_span.extend(self.previous.span),
                 ))
             }
             Token::Fun => {
@@ -137,7 +116,7 @@ where
 
                 Ok(to_stmt(
                     StmtType::FuncDecl(func_info),
-                    curr_span.extend(self.prev_span),
+                    curr_span.extend(self.previous.span),
                 ))
             }
             Token::Class => self.parse_class_decl(),
@@ -160,10 +139,9 @@ where
 
     /// Parse print and expression statements.
     fn parse_statement(&mut self) -> ParserResult<Stmt> {
-        let token = self.peek_token();
-        let curr_span = token.span;
+        let curr_span = self.current.span;
 
-        match token.token {
+        match self.current.token {
             Token::Print => {
                 self.bump();
                 let expr = self.parse_expression()?;
@@ -171,7 +149,7 @@ where
 
                 Ok(to_stmt(
                     StmtType::Print(expr),
-                    curr_span.extend(self.prev_span),
+                    curr_span.extend(self.previous.span),
                 ))
             }
             Token::If => self.parse_if_else(),
@@ -185,7 +163,7 @@ where
 
                 Ok(to_stmt(
                     StmtType::Expression(expr),
-                    curr_span.extend(self.prev_span),
+                    curr_span.extend(self.previous.span),
                 ))
             }
         }
@@ -193,7 +171,8 @@ where
 
     /// Parse return statement.
     fn parse_return(&mut self) -> ParserResult<Stmt> {
-        let curr_span = self.current_span();
+        let curr_span = self.current.span;
+
         self.consume(Token::Return)?;
         let expr = if !self.check(Token::Semicolon) {
             Some(self.parse_expression()?)
@@ -204,7 +183,7 @@ where
 
         Ok(to_stmt(
             StmtType::Return(expr),
-            curr_span.extend(self.prev_span),
+            curr_span.extend(self.previous.span),
         ))
     }
 
@@ -224,7 +203,7 @@ where
         }
 
         if args.len() >= MAX_FUNC_ARGS {
-            let curr_span = self.current_span();
+            let curr_span = self.current.span;
             return Err(ParserError::TooManyArgs(curr_span.start_pos));
         }
 
@@ -233,7 +212,7 @@ where
 
     /// Parse class declaration.
     fn parse_class_decl(&mut self) -> ParserResult<Stmt> {
-        let curr_span = self.current_span();
+        let curr_span = self.current.span;
 
         self.consume(Token::Class)?;
         let name = self.parse_identifier()?;
@@ -254,13 +233,13 @@ where
 
         Ok(to_stmt(
             StmtType::ClassDecl(name, superclass, methods_info),
-            curr_span.extend(self.prev_span),
+            curr_span.extend(self.previous.span),
         ))
     }
 
     /// Parse if else statement.
     fn parse_if_else(&mut self) -> ParserResult<Stmt> {
-        let curr_span = self.current_span();
+        let curr_span = self.current.span;
 
         self.consume(Token::If)?;
         self.consume(Token::LeftParen)?;
@@ -275,13 +254,13 @@ where
 
         Ok(to_stmt(
             StmtType::IfElse(condition, if_body, else_body),
-            curr_span.extend(self.prev_span),
+            curr_span.extend(self.previous.span),
         ))
     }
 
     /// Parse while statement.
     fn parse_while(&mut self) -> ParserResult<Stmt> {
-        let curr_span = self.current_span();
+        let curr_span = self.current.span;
 
         self.consume(Token::While)?;
         self.consume(Token::LeftParen)?;
@@ -291,13 +270,13 @@ where
 
         Ok(to_stmt(
             StmtType::While(condition, Box::new(body)),
-            curr_span.extend(self.prev_span),
+            curr_span.extend(self.previous.span),
         ))
     }
 
     /// Parse for loop.
     fn parse_for(&mut self) -> ParserResult<Stmt> {
-        let curr_span = self.current_span();
+        let curr_span = self.current.span;
 
         self.consume(Token::For)?;
         self.consume(Token::LeftParen)?;
@@ -308,12 +287,12 @@ where
         } else if self.check(Token::Var) {
             Some(self.parse_declaration()?)
         } else {
-            let curr_span = self.current_span();
+            let curr_span = self.current.span;
             let expr = self.parse_expression()?;
             self.consume(Token::Semicolon)?;
             Some(to_stmt(
                 StmtType::Expression(expr),
-                curr_span.extend(self.prev_span),
+                curr_span.extend(self.previous.span),
             ))
         };
 
@@ -349,7 +328,7 @@ where
         if let Some(init_stmt) = init_stmt {
             body = to_stmt(
                 StmtType::Block(vec![init_stmt, body]),
-                curr_span.extend(self.prev_span),
+                curr_span.extend(self.previous.span),
             );
         }
 
@@ -358,7 +337,7 @@ where
 
     /// Parse a block of statements.
     fn parse_block(&mut self) -> ParserResult<Stmt> {
-        let curr_span = self.current_span();
+        let curr_span = self.current.span;
 
         let mut stmts = vec![];
         self.consume(Token::LeftBrace)?;
@@ -368,16 +347,18 @@ where
 
         Ok(to_stmt(
             StmtType::Block(stmts),
-            curr_span.extend(self.prev_span),
+            curr_span.extend(self.previous.span),
         ))
     }
 
     /// Parse an identifier.
     fn parse_identifier(&mut self) -> ParserResult<String> {
-        let token = self.take_token();
-        match token.token {
-            Token::Identifier(name) => Ok(name),
-            _ => Err(ParserError::ExpectedIdentifier(token.span.start_pos)),
+        self.bump();
+        match &self.previous.token {
+            Token::Identifier(name) => Ok(name.to_owned()),
+            _ => Err(ParserError::ExpectedIdentifier(
+                self.previous.span.start_pos,
+            )),
         }
     }
 
@@ -397,7 +378,7 @@ where
         }
 
         if args.len() >= MAX_FUNC_ARGS {
-            let curr_span = self.current_span();
+            let curr_span = self.current.span;
             return Err(ParserError::TooManyArgs(curr_span.start_pos));
         }
 
@@ -411,16 +392,16 @@ where
 
     /// Pratt parsing algo.
     pub fn run_pratt_parse_algo(&mut self, min_precedence: Precedence) -> ParserResult<Expr> {
-        let SpannedToken { token, span } = self.peek_token();
+        let curr_span = self.current.span;
 
         // Start by parsing literals or prefixes.
-        let mut lhs = match PrefixOperator::from_token(&token) {
+        let mut lhs = match PrefixOperator::from_token(&self.current.token) {
             Some(op) => {
                 self.bump();
                 let expr = self.run_pratt_parse_algo(op.precedence())?;
                 to_expr(
                     ExprType::Prefix(op, Box::new(expr)),
-                    span.extend(self.prev_span),
+                    curr_span.extend(self.previous.span),
                 )
             }
             None => self.parse_primary()?,
@@ -428,10 +409,8 @@ where
 
         // Recursively handle any infixes with same or higher precedence.
         loop {
-            let token = self.peek_token().token;
-
             // Standard infix
-            if let Some(op) = InfixOperator::from_token(&token) {
+            if let Some(op) = InfixOperator::from_token(&self.current.token) {
                 if op.precedence() <= min_precedence {
                     break;
                 }
@@ -444,7 +423,7 @@ where
             }
 
             // Logical
-            if let Some(op) = LogicalOperator::from_token(&token) {
+            if let Some(op) = LogicalOperator::from_token(&self.current.token) {
                 if op.precedence() <= min_precedence {
                     break;
                 }
@@ -460,7 +439,7 @@ where
             }
 
             // Assignment
-            if let Token::Equals = token {
+            if let Token::Equals = self.current.token {
                 if Precedence::Assignment < min_precedence {
                     break;
                 }
@@ -474,33 +453,33 @@ where
                         ExprType::Assignment(VariableInfo::new(var_info.name), rhs_box)
                     }
                     ExprType::Get(expr, property) => ExprType::Set(expr, property, rhs_box),
-                    _ => return Err(ParserError::ExpectedLValue(span.start_pos)),
+                    _ => return Err(ParserError::ExpectedLValue(curr_span.start_pos)),
                 };
                 lhs = to_expr(new_expr, new_span);
                 continue;
             }
 
             // Dot
-            if let Token::Dot = token {
+            if let Token::Dot = self.current.token {
                 if Precedence::Property < min_precedence {
                     break;
                 }
 
                 self.bump();
                 let rhs = self.parse_identifier()?;
-                let new_span = lhs.span.extend(self.prev_span);
+                let new_span = lhs.span.extend(self.previous.span);
                 lhs = to_expr(ExprType::Get(Box::new(lhs), rhs), new_span);
                 continue;
             }
 
             // Function call
-            if let Token::LeftParen = token {
+            if let Token::LeftParen = self.current.token {
                 if Precedence::Call < min_precedence {
                     break;
                 }
 
                 let args = self.parse_fn_args()?;
-                let new_span = lhs.span.extend(self.prev_span);
+                let new_span = lhs.span.extend(self.previous.span);
                 lhs = to_expr(ExprType::Call(Box::new(lhs), args), new_span);
                 continue;
             }
@@ -513,16 +492,16 @@ where
 
     /// Parse primary token.
     fn parse_primary(&mut self) -> ParserResult<Expr> {
-        let token = self.take_token();
-        let curr_span = token.span;
+        self.bump();
+        let curr_span = self.previous.span;
 
-        let expr = match token.token {
-            Token::Number(n) => from_literal(Literal::Number(n)),
+        let expr = match &self.previous.token {
+            Token::Number(n) => from_literal(Literal::Number(*n)),
             Token::True => from_literal(Literal::Boolean(true)),
             Token::False => from_literal(Literal::Boolean(false)),
-            Token::String(s) => from_literal(Literal::Str(s)),
+            Token::String(s) => from_literal(Literal::Str(s.to_owned())),
             Token::Nil => from_literal(Literal::Nil),
-            Token::Identifier(name) => ExprType::Variable(VariableInfo::new(name)),
+            Token::Identifier(name) => ExprType::Variable(VariableInfo::new(name.to_owned())),
             Token::This => ExprType::This(VariableInfo::new(THIS_STR.to_owned())),
             Token::Super => {
                 let var = VariableInfo::new(SUPER_STR.to_owned());
@@ -535,10 +514,10 @@ where
                 self.consume(Token::RightParen)?;
                 return Ok(sub_expr);
             }
-            t => return Err(ParserError::ExpectedExpr(curr_span.start_pos, t)),
+            t => return Err(ParserError::ExpectedExpr(curr_span.start_pos, t.clone())),
         };
 
-        Ok(to_expr(expr, curr_span.extend(self.prev_span)))
+        Ok(to_expr(expr, curr_span.extend(self.previous.span)))
     }
 }
 

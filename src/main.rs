@@ -1,6 +1,6 @@
 use crate::bytecode_vm::{Compiler, VM};
 use crate::lox_frontend::grammar::Stmt;
-use crate::lox_frontend::{Lexer, Parser};
+use crate::lox_frontend::Parser;
 use crate::treewalk_interpreter::{Interpreter, Resolver};
 
 mod bytecode_vm;
@@ -69,16 +69,8 @@ fn run_file(mut interpreter: Box<dyn Run>, filename: &str) {
 }
 
 fn run(interpreter: &mut dyn Run, source: &str) -> RunResult {
-    // Run lexer.
-    let lexer = Lexer::new(source);
-    let tokens: Result<Vec<_>, _> = lexer.iter().collect();
-    let tokens = match tokens {
-        Ok(tokens) => tokens,
-        Err(e) => return Err(e),
-    };
-
     // Run parser.
-    let parser = Parser::new(tokens.into_iter());
+    let parser = Parser::new(source);
     let stmts: Vec<_> = parser.parse();
     let stmts: Vec<_> = match stmts.into_iter().collect() {
         Ok(stmts) => stmts,

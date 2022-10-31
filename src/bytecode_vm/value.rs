@@ -1,4 +1,5 @@
 use super::chunk::Chunk;
+use super::errors::{VmError, VmResult};
 use super::gc::{GcPtr, Traceable};
 use super::native_function::NativeFn;
 use super::string_interner::StringIntern;
@@ -73,6 +74,27 @@ impl Value {
             Value::Class(ptr) => ptr.mark(),
             Value::Instance(ptr) => ptr.mark(),
             Value::BoundMethod(ptr) => ptr.mark(),
+        }
+    }
+
+    pub fn to_class(&self) -> VmResult<GcPtr<LoxClass>> {
+        match self {
+            Value::Class(ptr) => Ok(ptr.clone()),
+            _ => Err(VmError::NotAClass),
+        }
+    }
+
+    pub fn to_instance(&self) -> VmResult<GcPtr<LoxInstance>> {
+        match self {
+            Value::Instance(ptr) => Ok(ptr.clone()),
+            _ => Err(VmError::NotAnInstance),
+        }
+    }
+
+    pub fn to_closure(&self) -> VmResult<GcPtr<LoxClosure>> {
+        match self {
+            Value::Closure(ptr) => Ok(ptr.clone()),
+            _ => Err(VmError::NotAClosure),
         }
     }
 }

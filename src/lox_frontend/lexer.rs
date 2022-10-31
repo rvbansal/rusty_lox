@@ -5,10 +5,7 @@ use super::token::{SpannedToken, Token};
 pub struct Lexer<'src> {
     source: &'src str,
     cursor: Cursor<'src>,
-    seen_eof: bool,
 }
-
-pub type LexerResult<T> = Result<T, String>;
 
 impl<'src> Lexer<'src> {
     /// Creates a lexer from source.
@@ -16,86 +13,79 @@ impl<'src> Lexer<'src> {
         Lexer {
             source,
             cursor: Cursor::new(source),
-            seen_eof: false,
         }
     }
 
-    /// Returns the next token or None when the string is finished.
-    fn scan_token(&mut self) -> Option<LexerResult<SpannedToken>> {
-        // Get rid of whitespace.
-        self.cursor.take_while(|ch| ch.is_ascii_whitespace());
+    /// Returns the next token.
+    pub fn next_token(&mut self) -> SpannedToken {
+        loop {
+            // Get rid of whitespace.
+            self.cursor.take_while(|ch| ch.is_ascii_whitespace());
 
-        // Store starting position.
-        let start_pos = self.cursor.get_position();
+            let start_pos = self.cursor.get_position();
+            let token = self.lex_token();
+            let end_pos = self.cursor.get_position();
 
-        // Handle EOF case.
+            if let Some(token) = token {
+                return SpannedToken {
+                    token,
+                    span: Span::new(start_pos, end_pos),
+                };
+            }
+        }
+    }
+
+    fn lex_token(&mut self) -> Option<Token> {
         let (byte_idx, ch) = match self.cursor.take() {
             Some(t) => t,
-            None => {
-                if self.seen_eof {
-                    return None;
-                }
-                self.seen_eof = true;
-                let span = Span::new(start_pos, start_pos);
-                let token = Token::EndOfFile;
-                return Some(Ok(SpannedToken::new(token, span)));
-            }
+            None => return Some(Token::EndOfFile),
         };
 
-        let token_result = match ch {
+        let token = match ch {
             // Single-character tokens.
-            '(' => Ok(Token::LeftParen),
-            ')' => Ok(Token::RightParen),
-            '{' => Ok(Token::LeftBrace),
-            '}' => Ok(Token::RightBrace),
-            '+' => Ok(Token::Plus),
-            '-' => Ok(Token::Minus),
-            '*' => Ok(Token::Asterisk),
-            '.' => Ok(Token::Dot),
-            ',' => Ok(Token::Comma),
-            ';' => Ok(Token::Semicolon),
+            '(' => Token::LeftParen,
+            ')' => Token::RightParen,
+            '{' => Token::LeftBrace,
+            '}' => Token::RightBrace,
+            '+' => Token::Plus,
+            '-' => Token::Minus,
+            '*' => Token::Asterisk,
+            '.' => Token::Dot,
+            ',' => Token::Comma,
+            ';' => Token::Semicolon,
 
             // Slash can either be comment or division.
             '/' => {
                 if self.cursor.take_if('/') {
                     // Comment case.
                     self.consume_line();
-                    return self.scan_token();
+                    return None;
                 } else {
                     // Division case.
-                    Ok(Token::Slash)
+                    Token::Slash
                 }
             }
 
             // Potentially two character tokens.
-            '=' => Ok(self.look_for_eq_sign(Token::Equals, Token::DoubleEq)),
-            '<' => Ok(self.look_for_eq_sign(Token::LeftAngle, Token::LeftAngleEq)),
-            '>' => Ok(self.look_for_eq_sign(Token::RightAngle, Token::RightAngleEq)),
-            '!' => Ok(self.look_for_eq_sign(Token::Bang, Token::BangEq)),
+            '=' => self.look_for_eq_sign(Token::Equals, Token::DoubleEq),
+            '<' => self.look_for_eq_sign(Token::LeftAngle, Token::LeftAngleEq),
+            '>' => self.look_for_eq_sign(Token::RightAngle, Token::RightAngleEq),
+            '!' => self.look_for_eq_sign(Token::Bang, Token::BangEq),
 
             // String literals.
-            '"' => self.scan_string(byte_idx),
+            '"' => self.lex_string(byte_idx),
 
             // Numbers.
-            _ if is_digit_char(ch) => self.scan_number(byte_idx),
+            _ if is_digit_char(ch) => self.lex_number(byte_idx),
 
             // Identifiers.
-            _ if is_identified_char(ch) => self.scan_identifier_or_kw(byte_idx),
+            _ if is_identified_char(ch) => self.lex_identifier_or_kw(byte_idx),
 
             // Unrecognized token.
-            _ => Err(format!("Unrecognized token `{}`", ch)),
+            _ => Token::LexerError(format!("Unrecognized token `{}`", ch)),
         };
 
-        // If we get valid token, return it. Else, bubble up error.
-        match token_result {
-            Ok(token) => {
-                let end_pos = self.cursor.get_position();
-                let span = Span::new(start_pos, end_pos);
-                let spanned_token = SpannedToken::new(token, span);
-                Some(Ok(spanned_token))
-            }
-            Err(e) => Some(Err(format!("{}: {}", start_pos, e))),
-        }
+        Some(token)
     }
 
     fn consume_line(&mut self) {
@@ -117,26 +107,26 @@ impl<'src> Lexer<'src> {
 
     /// Scans string up to next '"' and returns associated string.
     /// start_idx is the starting '"'.
-    fn scan_string(&mut self, start_idx: usize) -> LexerResult<Token> {
+    fn lex_string(&mut self, start_idx: usize) -> Token {
         // Move past starting quote, '"'.
         let start_idx = start_idx + 1;
 
-        // Move until double quote.
         self.cursor.take_until(|ch| ch == '"');
-        let end_idx = match self.cursor.peek() {
-            None => return Err("Unterminated string.".to_owned()),
-            Some((i, _)) => i,
-        };
 
-        // Consume ending quote, '"'.
-        self.cursor.take();
-
-        let scanned_string = self.source[start_idx..end_idx].to_owned();
-        Ok(Token::String(scanned_string))
+        // Move until double quote.
+        match self.cursor.peek() {
+            Some((end_idx, '"')) => {
+                self.cursor.take();
+                let string = self.source[start_idx..end_idx].to_owned();
+                Token::String(string)
+            }
+            None => Token::LexerError("No terminal \" in string.".to_owned()),
+            _ => unreachable!(),
+        }
     }
 
     /// Scans a number and returns it.
-    fn scan_number(&mut self, start_idx: usize) -> LexerResult<Token> {
+    fn lex_number(&mut self, start_idx: usize) -> Token {
         self.cursor.take_while(is_digit_char);
 
         // Check for period in float.
@@ -158,13 +148,13 @@ impl<'src> Lexer<'src> {
 
         let scanned_number = &self.source[start_idx..end_idx];
         match scanned_number.parse() {
-            Ok(value) => Ok(Token::Number(value)),
-            Err(_) => Err(format!("Unparsable number `{}`", scanned_number)),
+            Ok(value) => Token::Number(value),
+            Err(_) => Token::LexerError(format!("Unparsable number `{}`", scanned_number)),
         }
     }
 
     /// Scan up to end of lexemme and return it as identifier. Checks for keywords.
-    fn scan_identifier_or_kw(&mut self, start_idx: usize) -> LexerResult<Token> {
+    fn lex_identifier_or_kw(&mut self, start_idx: usize) -> Token {
         self.cursor.take_while(is_identified_char);
 
         let end_idx = match self.cursor.peek() {
@@ -172,8 +162,7 @@ impl<'src> Lexer<'src> {
             Some((i, _)) => i,
         };
 
-        let slice = &self.source[start_idx..end_idx];
-        let token = match slice {
+        match &self.source[start_idx..end_idx] {
             "and" => Token::And,
             "class" => Token::Class,
             "else" => Token::Else,
@@ -190,10 +179,8 @@ impl<'src> Lexer<'src> {
             "true" => Token::True,
             "var" => Token::Var,
             "while" => Token::While,
-            _ => Token::Identifier(slice.to_owned()),
-        };
-
-        Ok(token)
+            other => Token::Identifier(other.to_owned()),
+        }
     }
 
     /// Returns an iterator version of lexer.
@@ -207,10 +194,16 @@ pub struct LexerIterator<'src> {
 }
 
 impl<'src> Iterator for LexerIterator<'src> {
-    type Item = LexerResult<SpannedToken>;
+    type Item = SpannedToken;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.lexer.scan_token()
+        let token = self.lexer.next_token();
+
+        if token.token == Token::EndOfFile {
+            return None;
+        }
+
+        Some(token)
     }
 }
 

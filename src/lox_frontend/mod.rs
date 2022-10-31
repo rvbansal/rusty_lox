@@ -7,5 +7,5 @@ pub mod parser;
 pub mod span;
 pub mod token;
 
-pub use lexer::{Lexer, LexerResult};
+pub use lexer::Lexer;
 pub use parser::Parser;
