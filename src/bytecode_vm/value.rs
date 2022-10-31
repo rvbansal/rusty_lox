@@ -25,7 +25,7 @@ pub struct LoxClosure {
     pub name: StringIntern,
     pub arity: usize,
     pub chunk: Rc<Chunk>,
-    pub upvalues: Rc<Vec<ActiveUpvalue>>,
+    pub upvalues: Rc<Vec<UpvaluePtr>>,
 }
 
 pub struct LoxClass {
@@ -43,15 +43,21 @@ pub struct LoxBoundMethod {
     pub closure: GcPtr<LoxClosure>,
 }
 
+pub enum PropertySearch {
+    Field(Value),
+    Method(GcPtr<LoxClosure>),
+    Missing,
+}
+
 #[derive(Clone)]
-pub enum UpvalueType {
+pub enum UpvalueData {
     Open(usize),   // Lives on the stack
     Closed(Value), // Popped off the stack to the heap
 }
 
 #[derive(Clone)]
-pub struct ActiveUpvalue {
-    location: Rc<RefCell<UpvalueType>>,
+pub struct UpvaluePtr {
+    data: Rc<RefCell<UpvalueData>>,
 }
 
 impl Value {
@@ -158,45 +164,53 @@ impl Traceable for LoxBoundMethod {
     }
 }
 
-impl ActiveUpvalue {
+impl LoxInstance {
+    pub fn search(&self, name: &StringIntern) -> PropertySearch {
+        if let Some(value) = self.fields.get(name) {
+            return PropertySearch::Field(value.clone());
+        }
+
+        if let Some(method_ptr) = self.class.borrow().methods.get(name) {
+            return PropertySearch::Method(method_ptr.clone());
+        }
+
+        PropertySearch::Missing
+    }
+}
+
+impl UpvaluePtr {
     pub fn new(index: usize) -> Self {
-        ActiveUpvalue {
-            location: Rc::new(RefCell::new(UpvalueType::Open(index))),
+        UpvaluePtr {
+            data: Rc::new(RefCell::new(UpvalueData::Open(index))),
         }
     }
 
-    pub fn close(&self, value: Value) {
-        self.location.replace(UpvalueType::Closed(value));
+    pub fn borrow(&self) -> std::cell::Ref<UpvalueData> {
+        self.data.borrow()
     }
 
-    pub fn get_if_closed(&self) -> Result<Value, usize> {
-        match &*self.location.borrow() {
-            UpvalueType::Open(i) => Err(*i),
-            UpvalueType::Closed(v) => Ok(v.clone()),
-        }
+    pub fn borrow_mut(&mut self) -> std::cell::RefMut<UpvalueData> {
+        self.data.borrow_mut()
     }
 
-    pub fn set_if_closed(&self, value: &Value) -> Result<(), usize> {
-        match &mut *self.location.borrow_mut() {
-            UpvalueType::Open(i) => Err(*i),
-            UpvalueType::Closed(v) => {
-                *v = value.clone();
-                Ok(())
-            }
+    pub fn close_over_value(&self, value: Value) {
+        if let UpvalueData::Closed(_) = &*self.data.borrow() {
+            panic!("Cannot close over closed upvalue.")
         }
+        self.data.replace(UpvalueData::Closed(value));
     }
 
     pub fn get_open_index(&self) -> Option<usize> {
-        match &*self.location.borrow() {
-            UpvalueType::Open(index) => Some(*index),
-            UpvalueType::Closed(_) => None,
+        match &*self.data.borrow() {
+            UpvalueData::Open(index) => Some(*index),
+            UpvalueData::Closed(_) => None,
         }
     }
 
     pub fn mark_internals(&self) {
-        match &*self.location.borrow() {
-            UpvalueType::Open(_) => {}
-            UpvalueType::Closed(value) => value.mark_internals(),
+        match &*self.data.borrow() {
+            UpvalueData::Open(_) => {}
+            UpvalueData::Closed(value) => value.mark_internals(),
         }
     }
 }

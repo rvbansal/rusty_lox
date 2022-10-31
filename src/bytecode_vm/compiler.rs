@@ -16,12 +16,15 @@ type LocalIndex = u8;
 const MAX_UPVALUES: usize = 256;
 type UpvalueIndex = u8;
 
-const THIS_STR: &str = "this";
-const INIT_STR: &str = "init";
-const SUPER_STR: &str = "super";
+pub const THIS_STR: &str = "this";
+pub const INIT_STR: &str = "init";
+pub const SUPER_STR: &str = "super";
+
+pub const UPVALUE_IMMEDIATE_VALUE: u8 = 1;
+pub const UPVALUE_RECURSIVE_VALUE: u8 = 0;
 
 #[derive(Clone, PartialEq, Eq)]
-pub enum Upvalue {
+enum Upvalue {
     Immediate(LocalIndex),
     Recursive(UpvalueIndex),
 }
@@ -225,7 +228,7 @@ impl<'s> Compiler<'s> {
                     self.define_variable(SUPER_STR, line)?;
 
                     self.get_variable(&superclass.name, line)?;
-                    self.get_variable(name, line);
+                    self.get_variable(name, line)?;
                     self.chunk().write_op(OpCode::Inherit, line);
                 } else {
                     self.get_variable(name, line)?;
@@ -356,8 +359,8 @@ impl<'s> Compiler<'s> {
             .write_op_with_byte(OpCode::MakeClosure, index, line);
         for upvalue in fn_context.upvalues.iter().cloned() {
             let bytes = match upvalue {
-                Upvalue::Immediate(index) => [1, index],
-                Upvalue::Recursive(index) => [0, index],
+                Upvalue::Immediate(index) => [UPVALUE_IMMEDIATE_VALUE, index],
+                Upvalue::Recursive(index) => [UPVALUE_RECURSIVE_VALUE, index],
             };
 
             self.chunk().write_byte(bytes[0], line);
