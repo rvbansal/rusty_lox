@@ -1,33 +1,20 @@
 use crate::lox_frontend::grammar::{Expr, ExprType, FuncInfo, Literal, Stmt, StmtType};
-use crate::lox_frontend::operator::{InfixOperator, LogicalOperator, PrefixOperator};
+use crate::lox_frontend::grammar::{InfixOperator, LogicalOperator, PrefixOperator};
 
-use super::chunk::{Chunk, ChunkConstant, ConstantIndex};
+use super::chunk::{Chunk, ChunkConstant};
 use super::errors::{CompilerError, CompilerResult};
-use super::opcode::OpCode;
+use super::opcode::{
+    ConstantIndex, LocalIndex, StructOpCode, UpvalueIndex, UpvalueLocation, MAX_LOCAL_VARS,
+    MAX_UPVALUES,
+};
 use super::string_interner::StringInterner;
 
 use std::convert::{TryFrom, TryInto};
 use std::rc::Rc;
 
-// Index of local var in stack is stored in u8 for GET_LOCAL instruction.
-const MAX_LOCAL_VARS: usize = 256;
-type LocalIndex = u8;
-
-const MAX_UPVALUES: usize = 256;
-type UpvalueIndex = u8;
-
 pub const THIS_STR: &str = "this";
 pub const INIT_STR: &str = "init";
 pub const SUPER_STR: &str = "super";
-
-pub const UPVALUE_IMMEDIATE_VALUE: u8 = 1;
-pub const UPVALUE_RECURSIVE_VALUE: u8 = 0;
-
-#[derive(Clone, PartialEq, Eq)]
-enum Upvalue {
-    Immediate(LocalIndex),
-    Recursive(UpvalueIndex),
-}
 
 enum VariableLocator {
     Local(LocalIndex),
@@ -52,7 +39,7 @@ struct Local {
 struct CompilerContext {
     chunk: Chunk,
     locals: Vec<Local>,
-    upvalues: Vec<Upvalue>,
+    upvalues: Vec<UpvalueLocation>,
     scope_depth: u32,
     is_initializer: bool,
 }
@@ -115,7 +102,7 @@ impl CompilerContext {
         Ok(())
     }
 
-    fn add_upvalue(&mut self, key: Upvalue) -> CompilerResult<UpvalueIndex> {
+    fn add_upvalue(&mut self, key: UpvalueLocation) -> CompilerResult<UpvalueIndex> {
         for (i, upvalue) in self.upvalues.iter().enumerate() {
             if key == *upvalue {
                 return Ok(i.try_into().unwrap());
@@ -153,7 +140,7 @@ impl<'s> Compiler<'s> {
         for stmt in stmts.iter() {
             self.compile_statement(stmt)?;
         }
-        self.chunk().write_op(OpCode::Return, 99);
+        self.emit_op(StructOpCode::Return, 99);
 
         let main_context = self.context_stack.pop().expect("Empty context stack.");
         self.print_chunk("<main>", &main_context.chunk);
@@ -166,11 +153,11 @@ impl<'s> Compiler<'s> {
         match &stmt.stmt {
             StmtType::Expression(expr) => {
                 self.compile_expression(expr)?;
-                self.chunk().write_op(OpCode::Pop, line);
+                self.emit_op(StructOpCode::Pop, line);
             }
             StmtType::Print(expr) => {
                 self.compile_expression(expr)?;
-                self.chunk().write_op(OpCode::Print, line);
+                self.emit_op(StructOpCode::Print, line);
             }
             StmtType::VariableDecl(name, expr) => {
                 self.compile_expression(expr)?;
@@ -209,13 +196,12 @@ impl<'s> Compiler<'s> {
                         self.emit_default_return(line);
                     }
                 }
-                self.chunk().write_op(OpCode::Return, line);
+                self.emit_op(StructOpCode::Return, line);
             }
             StmtType::ClassDecl(name, superclass, methods) => {
                 self.declare_variable(name)?;
                 let index = self.add_string_constant(name);
-                self.chunk()
-                    .write_op_with_byte(OpCode::MakeClass, index, line);
+                self.emit_op(StructOpCode::MakeClass(index), line);
                 self.define_variable(name, line)?;
                 // Put class on stack
                 if let Some(superclass) = superclass {
@@ -229,7 +215,7 @@ impl<'s> Compiler<'s> {
 
                     self.get_variable(&superclass.name, line)?;
                     self.get_variable(name, line)?;
-                    self.chunk().write_op(OpCode::Inherit, line);
+                    self.emit_op(StructOpCode::Inherit, line);
                 } else {
                     self.get_variable(name, line)?;
                 }
@@ -248,15 +234,14 @@ impl<'s> Compiler<'s> {
                         method_type,
                     )?;
                     let index = self.add_string_constant(&method.name);
-                    self.chunk().write_op_with_byte(
-                        OpCode::MakeMethod,
-                        index,
+                    self.emit_op(
+                        StructOpCode::MakeMethod(index),
                         method.body.span.end_pos.line_no,
                     );
                 }
 
                 // Pop class of stack
-                self.chunk().write_op(OpCode::Pop, line);
+                self.emit_op(StructOpCode::Pop, line);
 
                 if superclass.is_some() {
                     self.end_scope();
@@ -284,15 +269,13 @@ impl<'s> Compiler<'s> {
             ExprType::Get(expr, name) => {
                 let index = self.add_string_constant(name);
                 self.compile_expression(expr)?;
-                self.chunk()
-                    .write_op_with_byte(OpCode::GetProperty, index, line);
+                self.emit_op(StructOpCode::GetProperty(index), line);
             }
             ExprType::Set(expr, name, value_expr) => {
                 let index = self.add_string_constant(name);
                 self.compile_expression(expr)?;
                 self.compile_expression(value_expr)?;
-                self.chunk()
-                    .write_op_with_byte(OpCode::SetProperty, index, line);
+                self.emit_op(StructOpCode::SetProperty(index), line);
             }
             ExprType::This(_) => {
                 self.get_variable(THIS_STR, line)?;
@@ -302,8 +285,7 @@ impl<'s> Compiler<'s> {
                 self.get_variable(SUPER_STR, line)?;
 
                 let index = self.add_string_constant(method_name);
-                self.chunk()
-                    .write_op_with_byte(OpCode::GetSuper, index, line);
+                self.emit_op(StructOpCode::GetSuper(index), line);
             }
         }
 
@@ -338,7 +320,7 @@ impl<'s> Compiler<'s> {
         self.compile_statement(fn_decl.body.as_ref())?;
         let last_line = fn_decl.body.span.end_pos.line_no;
         self.emit_default_return(last_line);
-        self.chunk().write_op(OpCode::Return, last_line);
+        self.emit_op(StructOpCode::Return, last_line);
 
         // No need to end scope b/c we will pop off function context all together.
         // Build function data.
@@ -355,16 +337,9 @@ impl<'s> Compiler<'s> {
         };
         let index = self.add_constant(fn_template);
 
-        self.chunk()
-            .write_op_with_byte(OpCode::MakeClosure, index, line);
+        self.emit_op(StructOpCode::MakeClosure(index), line);
         for upvalue in fn_context.upvalues.iter().cloned() {
-            let bytes = match upvalue {
-                Upvalue::Immediate(index) => [UPVALUE_IMMEDIATE_VALUE, index],
-                Upvalue::Recursive(index) => [UPVALUE_RECURSIVE_VALUE, index],
-            };
-
-            self.chunk().write_byte(bytes[0], line);
-            self.chunk().write_byte(bytes[1], line);
+            self.chunk().write_upvalue(upvalue, line);
         }
 
         Ok(())
@@ -375,24 +350,22 @@ impl<'s> Compiler<'s> {
             Literal::Number(n) => {
                 let value = ChunkConstant::Number(*n);
                 let index = self.add_constant(value);
-                self.chunk()
-                    .write_op_with_byte(OpCode::Constant, index, line);
+                self.emit_op(StructOpCode::Constant(index), line);
             }
             Literal::Boolean(b) => {
                 let opcode = match *b {
-                    true => OpCode::True,
-                    false => OpCode::False,
+                    true => StructOpCode::True,
+                    false => StructOpCode::False,
                 };
-                self.chunk().write_op(opcode, line);
+                self.emit_op(opcode, line);
             }
             Literal::Nil => {
-                self.chunk().write_op(OpCode::Nil, line);
+                self.emit_op(StructOpCode::Nil, line);
             }
             Literal::Str(s) => {
                 let value = ChunkConstant::String(self.string_table.get_string_intern(s));
                 let index = self.add_constant(value);
-                self.chunk()
-                    .write_op_with_byte(OpCode::Constant, index, line);
+                self.emit_op(StructOpCode::Constant(index), line);
             }
         }
     }
@@ -403,26 +376,26 @@ impl<'s> Compiler<'s> {
         self.compile_expression(lhs)?;
         self.compile_expression(rhs)?;
 
-        let chunk = self.chunk();
+        let _chunk = self.chunk();
         match op {
-            InfixOperator::Add => chunk.write_op(OpCode::Add, line),
-            InfixOperator::Subtract => chunk.write_op(OpCode::Subtract, line),
-            InfixOperator::Multiply => chunk.write_op(OpCode::Multiply, line),
-            InfixOperator::Divide => chunk.write_op(OpCode::Divide, line),
-            InfixOperator::EqualTo => chunk.write_op(OpCode::Equal, line),
+            InfixOperator::Add => self.emit_op(StructOpCode::Add, line),
+            InfixOperator::Subtract => self.emit_op(StructOpCode::Subtract, line),
+            InfixOperator::Multiply => self.emit_op(StructOpCode::Multiply, line),
+            InfixOperator::Divide => self.emit_op(StructOpCode::Divide, line),
+            InfixOperator::EqualTo => self.emit_op(StructOpCode::Equal, line),
             InfixOperator::NotEqualTo => {
-                chunk.write_op(OpCode::Equal, line);
-                chunk.write_op(OpCode::Not, line)
+                self.emit_op(StructOpCode::Equal, line);
+                self.emit_op(StructOpCode::Not, line)
             }
-            InfixOperator::GreaterThan => chunk.write_op(OpCode::GreaterThan, line),
+            InfixOperator::GreaterThan => self.emit_op(StructOpCode::GreaterThan, line),
             InfixOperator::GreaterEq => {
-                chunk.write_op(OpCode::LessThan, line);
-                chunk.write_op(OpCode::Not, line)
+                self.emit_op(StructOpCode::LessThan, line);
+                self.emit_op(StructOpCode::Not, line)
             }
-            InfixOperator::LessThan => chunk.write_op(OpCode::LessThan, line),
+            InfixOperator::LessThan => self.emit_op(StructOpCode::LessThan, line),
             InfixOperator::LessEq => {
-                chunk.write_op(OpCode::GreaterThan, line);
-                chunk.write_op(OpCode::Not, line)
+                self.emit_op(StructOpCode::GreaterThan, line);
+                self.emit_op(StructOpCode::Not, line)
             }
         };
 
@@ -435,11 +408,11 @@ impl<'s> Compiler<'s> {
         self.compile_expression(expr)?;
 
         let opcode = match op {
-            PrefixOperator::Negate => OpCode::Negate,
-            PrefixOperator::LogicalNot => OpCode::Not,
+            PrefixOperator::Negate => StructOpCode::Negate,
+            PrefixOperator::LogicalNot => StructOpCode::Not,
         };
 
-        self.chunk().write_op(opcode, line);
+        self.emit_op(opcode, line);
 
         Ok(())
     }
@@ -449,10 +422,10 @@ impl<'s> Compiler<'s> {
         let rhs_line = rhs.span.start_pos.line_no;
 
         self.compile_expression(lhs)?;
-        let jump_short_circuit = self.chunk().emit_jump(OpCode::JumpIfFalse, lhs_line);
-        self.chunk().write_op(OpCode::Pop, rhs_line);
+        let jump_short_circuit = self.emit_jump(StructOpCode::JumpIfFalse(0), lhs_line);
+        self.emit_op(StructOpCode::Pop, rhs_line);
         self.compile_expression(rhs)?;
-        self.chunk().patch_jump(jump_short_circuit);
+        self.patch_jump(jump_short_circuit);
 
         Ok(())
     }
@@ -462,12 +435,12 @@ impl<'s> Compiler<'s> {
         let rhs_line = rhs.span.start_pos.line_no;
 
         self.compile_expression(lhs)?;
-        let jump_lhs_false = self.chunk().emit_jump(OpCode::JumpIfFalse, lhs_line);
-        let jump_rhs_true = self.chunk().emit_jump(OpCode::Jump, lhs_line);
-        self.chunk().patch_jump(jump_lhs_false);
-        self.chunk().write_op(OpCode::Pop, rhs_line);
+        let jump_lhs_false = self.emit_jump(StructOpCode::JumpIfFalse(0), lhs_line);
+        let jump_rhs_true = self.emit_jump(StructOpCode::Jump(0), lhs_line);
+        self.patch_jump(jump_lhs_false);
+        self.emit_op(StructOpCode::Pop, rhs_line);
         self.compile_expression(rhs)?;
-        self.chunk().patch_jump(jump_rhs_true);
+        self.patch_jump(jump_rhs_true);
 
         Ok(())
     }
@@ -485,17 +458,16 @@ impl<'s> Compiler<'s> {
         // If condition is true, pop condition from stack, run if body,
         // and then jump past else body. Else, jump past if body, pop
         // condition from stack and run else body.
-        let jump_to_else_location = self.chunk().emit_jump(OpCode::JumpIfFalse, line);
-        self.chunk().write_op(OpCode::Pop, line);
+        let jump_to_else_location = self.emit_jump(StructOpCode::JumpIfFalse(0), line);
+        self.emit_op(StructOpCode::Pop, line);
         self.compile_statement(if_body)?;
-        let jump_over_else_location = self.chunk().emit_jump(OpCode::Jump, line);
-        self.chunk().write_op(OpCode::Pop, line);
-
-        self.chunk().patch_jump(jump_to_else_location);
+        let jump_over_else_location = self.emit_jump(StructOpCode::Jump(0), line);
+        self.emit_op(StructOpCode::Pop, line);
+        self.patch_jump(jump_to_else_location);
         if let Some(else_body) = else_body {
             self.compile_statement(else_body)?;
         }
-        self.chunk().patch_jump(jump_over_else_location);
+        self.patch_jump(jump_over_else_location);
 
         Ok(())
     }
@@ -505,12 +477,12 @@ impl<'s> Compiler<'s> {
         let loop_start = self.chunk().len();
 
         self.compile_expression(condition)?;
-        let jump_to_exit = self.chunk().emit_jump(OpCode::JumpIfFalse, line);
-        self.chunk().write_op(OpCode::Pop, line);
+        let jump_to_exit = self.emit_jump(StructOpCode::JumpIfFalse(0), line);
+        self.emit_op(StructOpCode::Pop, line);
         self.compile_statement(body)?;
-        self.chunk().emit_loop(loop_start, line);
-        self.chunk().patch_jump(jump_to_exit);
-        self.chunk().write_op(OpCode::Pop, line);
+        self.emit_loop(loop_start, line);
+        self.patch_jump(jump_to_exit);
+        self.emit_op(StructOpCode::Pop, line);
 
         Ok(())
     }
@@ -528,9 +500,7 @@ impl<'s> Compiler<'s> {
                 }
                 let index = self.add_string_constant(method_name);
 
-                self.chunk().write_op(OpCode::Invoke, line);
-                self.chunk().write_byte(index, line);
-                self.chunk().write_byte(num_args, line);
+                self.emit_op(StructOpCode::Invoke(index, num_args), line);
             }
             ExprType::Super(_, method_name) => {
                 // Method on super of instance.
@@ -544,9 +514,7 @@ impl<'s> Compiler<'s> {
                 let line = callee.span.end_pos.line_no;
                 let index = self.add_string_constant(method_name);
 
-                self.chunk().write_op(OpCode::InvokeSuper, line);
-                self.chunk().write_byte(index, line);
-                self.chunk().write_byte(num_args, line);
+                self.emit_op(StructOpCode::InvokeSuper(index, num_args), line);
             }
             _ => {
                 // Usual call.
@@ -555,8 +523,7 @@ impl<'s> Compiler<'s> {
                 for arg in args.iter() {
                     self.compile_expression(arg)?;
                 }
-                self.chunk()
-                    .write_op_with_byte(OpCode::Call, num_args, line);
+                self.emit_op(StructOpCode::Call(num_args), line);
             }
         }
 
@@ -578,8 +545,7 @@ impl<'s> Compiler<'s> {
             // Store the global var name as a string constant, so VM can
             // refer to it.
             let global_var_idx = self.add_string_constant(name);
-            self.chunk()
-                .write_op_with_byte(OpCode::DefineGlobal, global_var_idx, line);
+            self.emit_op(StructOpCode::DefineGlobal(global_var_idx), line);
         } else {
             self.get_context_mut().mark_last_local_initialized();
         }
@@ -592,17 +558,14 @@ impl<'s> Compiler<'s> {
             VariableLocator::Global => {
                 // Global variable.
                 let global_var_idx = self.add_string_constant(var_name);
-                self.chunk()
-                    .write_op_with_byte(OpCode::GetGlobal, global_var_idx, line);
+                self.emit_op(StructOpCode::GetGlobal(global_var_idx), line);
             }
             VariableLocator::Local(index) => {
                 // Local variable.
-                self.chunk()
-                    .write_op_with_byte(OpCode::GetLocal, index, line);
+                self.emit_op(StructOpCode::GetLocal(index), line);
             }
             VariableLocator::Upvalue(index) => {
-                self.chunk()
-                    .write_op_with_byte(OpCode::GetUpvalue, index, line);
+                self.emit_op(StructOpCode::GetUpvalue(index), line);
             }
         }
 
@@ -615,16 +578,13 @@ impl<'s> Compiler<'s> {
         match self.resolve_variable(var_name)? {
             VariableLocator::Global => {
                 let global_var_idx = self.add_string_constant(var_name);
-                self.chunk()
-                    .write_op_with_byte(OpCode::SetGlobal, global_var_idx, line);
+                self.emit_op(StructOpCode::SetGlobal(global_var_idx), line);
             }
             VariableLocator::Local(index) => {
-                self.chunk()
-                    .write_op_with_byte(OpCode::SetLocal, index, line);
+                self.emit_op(StructOpCode::SetLocal(index), line);
             }
             VariableLocator::Upvalue(index) => {
-                self.chunk()
-                    .write_op_with_byte(OpCode::SetUpvalue, index, line);
+                self.emit_op(StructOpCode::SetUpvalue(index), line);
             }
         }
 
@@ -672,9 +632,9 @@ impl<'s> Compiler<'s> {
                 break;
             }
             if local.captured {
-                context.chunk.write_op(OpCode::CloseUpvalue, 99);
+                context.chunk.write_op(StructOpCode::CloseUpvalue, 99);
             } else {
-                context.chunk.write_op(OpCode::Pop, 99);
+                context.chunk.write_op(StructOpCode::Pop, 99);
             }
             context.locals.pop();
         }
@@ -700,10 +660,10 @@ impl<'s> Compiler<'s> {
 
         self.context_stack[stack_index].locals[local_index as usize].captured = true;
 
-        let mut upvalue_index =
-            self.context_stack[stack_index + 1].add_upvalue(Upvalue::Immediate(local_index))?;
+        let mut upvalue_index = self.context_stack[stack_index + 1]
+            .add_upvalue(UpvalueLocation::Immediate(local_index))?;
         for context in self.context_stack[stack_index + 2..].iter_mut() {
-            upvalue_index = context.add_upvalue(Upvalue::Recursive(upvalue_index))?;
+            upvalue_index = context.add_upvalue(UpvalueLocation::Recursive(upvalue_index))?;
         }
 
         Ok(VariableLocator::Upvalue(upvalue_index))
@@ -711,10 +671,34 @@ impl<'s> Compiler<'s> {
 
     fn emit_default_return(&mut self, line: usize) {
         if self.get_context().is_initializer {
-            self.chunk().write_op_with_byte(OpCode::GetLocal, 0, line);
+            self.emit_op(StructOpCode::GetLocal(0), line);
         } else {
-            self.chunk().write_op(OpCode::Nil, line);
+            self.emit_op(StructOpCode::Nil, line);
         }
+    }
+
+    fn emit_op(&mut self, op: StructOpCode, line: usize) {
+        self.chunk().write_op(op, line);
+    }
+
+    fn emit_jump(&mut self, op: StructOpCode, line: usize) -> usize {
+        let jump_index = self.chunk().len();
+        self.emit_op(op, line);
+        jump_index
+    }
+
+    fn patch_jump(&mut self, jump_index: usize) {
+        let distance = self.chunk().len() - (jump_index + 3);
+
+        let distance = u16::try_from(distance).expect("Jump distance too large.");
+        self.chunk().patch_short(jump_index + 1, distance).unwrap();
+    }
+
+    fn emit_loop(&mut self, loop_start_index: usize, line: usize) {
+        let distance = (self.chunk().len() + 3) - loop_start_index;
+        let distance = u16::try_from(distance).expect("Jump distance too large.");
+
+        self.emit_op(StructOpCode::Loop(distance), line);
     }
 
     fn print_chunk(&self, _name: &str, _chunk: &Chunk) {

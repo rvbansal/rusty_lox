@@ -8,7 +8,7 @@ use crate::lox_frontend::constants::{INIT_STR, SUPER_STR, THIS_STR};
 use crate::lox_frontend::grammar::{
     Expr, ExprType, FuncInfo, Literal, Stmt, StmtType, VariableInfo,
 };
-use crate::lox_frontend::operator::{InfixOperator, LogicalOperator, PrefixOperator};
+use crate::lox_frontend::grammar::{InfixOperator, LogicalOperator, PrefixOperator};
 
 use std::collections::HashMap;
 

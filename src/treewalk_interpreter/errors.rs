@@ -1,5 +1,5 @@
 use super::object::Object;
-use crate::lox_frontend::operator::{InfixOperator, PrefixOperator};
+use crate::lox_frontend::grammar::{InfixOperator, PrefixOperator};
 
 #[derive(Debug, PartialEq)]
 pub enum InterpreterError {

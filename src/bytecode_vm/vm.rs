@@ -1,10 +1,10 @@
 use super::chunk::{Chunk, ChunkConstant};
-use super::compiler::{INIT_STR, UPVALUE_IMMEDIATE_VALUE, UPVALUE_RECURSIVE_VALUE};
+use super::compiler::INIT_STR;
 use super::errors::{VmError, VmResult};
 use super::gc::{GcHeap, GcPtr};
 use super::native_function;
 use super::native_function::NativeFn;
-use super::opcode::OpCode;
+use super::opcode::{ConstantIndex, StructOpCode, UpvalueLocation};
 use super::string_interner::{StringIntern, StringInterner};
 use super::value::{
     LoxBoundMethod, LoxClass, LoxClosure, LoxInstance, PropertySearch, UpvalueData, UpvaluePtr,
@@ -24,6 +24,7 @@ struct CallFrame {
     upvalues: Rc<Vec<UpvaluePtr>>,
 }
 
+#[derive(Debug)]
 struct Stack<T> {
     stack: Vec<T>,
 }
@@ -248,29 +249,23 @@ impl VM {
                 println!();
             }
 
-            // Convert bytecode to opcode
-            let op = match self.try_read_op() {
-                Ok(op) => op,
-                Err(byte) => return Err(VmError::UnknownOpCode(byte)),
-            };
-
             // Run instruction
-            match op {
-                OpCode::True => self.stack.push(Value::Boolean(true)),
-                OpCode::False => self.stack.push(Value::Boolean(false)),
-                OpCode::Nil => self.stack.push(Value::Nil),
-                OpCode::Constant => {
-                    let value = match self.read_index_as_constant() {
+            match self.try_read_op()? {
+                StructOpCode::True => self.stack.push(Value::Boolean(true)),
+                StructOpCode::False => self.stack.push(Value::Boolean(false)),
+                StructOpCode::Nil => self.stack.push(Value::Nil),
+                StructOpCode::Constant(index) => {
+                    let value = match self.read_constant(index) {
                         ChunkConstant::Number(n) => Value::Number(n),
                         ChunkConstant::String(s) => Value::String(s),
                         c => return Err(VmError::CannotParseConstant(c)),
                     };
                     self.stack.push(value);
                 }
-                OpCode::Add => self.run_add()?,
-                OpCode::Subtract => self.numerical_binop(|lhs, rhs| lhs - rhs)?,
-                OpCode::Multiply => self.numerical_binop(|lhs, rhs| lhs * rhs)?,
-                OpCode::Divide => {
+                StructOpCode::Add => self.run_add()?,
+                StructOpCode::Subtract => self.numerical_binop(|lhs, rhs| lhs - rhs)?,
+                StructOpCode::Multiply => self.numerical_binop(|lhs, rhs| lhs * rhs)?,
+                StructOpCode::Divide => {
                     if let Value::Number(n) = self.stack.peek(0)? {
                         if *n == 0.0 {
                             return Err(VmError::DivideByZero);
@@ -278,7 +273,7 @@ impl VM {
                     }
                     self.numerical_binop(|lhs, rhs| lhs / rhs)?;
                 }
-                OpCode::Negate => match self.stack.peek(0)? {
+                StructOpCode::Negate => match self.stack.peek(0)? {
                     Value::Number(n) => {
                         let n = n.to_owned();
                         self.stack.pop()?;
@@ -286,24 +281,24 @@ impl VM {
                     }
                     _ => return Err(VmError::WrongOperandType),
                 },
-                OpCode::Not => {
+                StructOpCode::Not => {
                     let value = self.stack.pop()?;
                     self.stack.push(Value::Boolean(!value.is_truthy()));
                 }
-                OpCode::Equal => {
+                StructOpCode::Equal => {
                     let rhs = self.stack.pop()?;
                     let lhs = self.stack.pop()?;
                     self.stack.push(Value::Boolean(lhs == rhs));
                 }
-                OpCode::GreaterThan => self.logical_binop(|lhs, rhs| lhs > rhs)?,
-                OpCode::LessThan => self.logical_binop(|lhs, rhs| lhs < rhs)?,
-                OpCode::DefineGlobal => {
-                    let name = self.read_index_as_string();
+                StructOpCode::GreaterThan => self.logical_binop(|lhs, rhs| lhs > rhs)?,
+                StructOpCode::LessThan => self.logical_binop(|lhs, rhs| lhs < rhs)?,
+                StructOpCode::DefineGlobal(index) => {
+                    let name = self.read_string(index);
                     let value = self.stack.pop()?;
                     self.globals.insert(name, value);
                 }
-                OpCode::GetGlobal => {
-                    let name = self.read_index_as_string();
+                StructOpCode::GetGlobal(index) => {
+                    let name = self.read_string(index);
                     let value = match self.globals.get(&name) {
                         Some(value) => value.clone(),
                         None => {
@@ -313,8 +308,8 @@ impl VM {
                     };
                     self.stack.push(value);
                 }
-                OpCode::SetGlobal => {
-                    let name = self.read_index_as_string();
+                StructOpCode::SetGlobal(index) => {
+                    let name = self.read_string(index);
                     if !self.globals.contains_key(&name) {
                         let name: String = (*name).to_owned();
                         return Err(VmError::UndefinedGlobal(name));
@@ -324,34 +319,34 @@ impl VM {
                     let value = self.stack.peek(0)?.clone();
                     self.globals.insert(name, value);
                 }
-                OpCode::GetLocal => {
+                StructOpCode::GetLocal(index) => {
+                    let index = usize::from(index);
                     let base_ptr = self.frame().base_ptr;
-                    let index = self.read_byte() as usize;
                     let value = self.stack.get(base_ptr + index)?.clone();
                     self.stack.push(value);
                 }
-                OpCode::SetLocal => {
+                StructOpCode::SetLocal(index) => {
+                    let index = usize::from(index);
                     let base_ptr = self.frame().base_ptr;
-                    let index = self.read_byte() as usize;
                     let value = self.stack.peek(0)?.clone();
                     self.stack.set(base_ptr + index, value)?;
                 }
-                OpCode::Jump => {
-                    let jump_by = usize::from(self.read_short());
-                    self.frame_mut().ip += jump_by;
+                StructOpCode::Jump(offset) => {
+                    let offset = usize::from(offset);
+                    self.frame_mut().ip += offset;
                 }
-                OpCode::JumpIfFalse => {
-                    let jump_by = usize::from(self.read_short());
+                StructOpCode::JumpIfFalse(offset) => {
+                    let offset = usize::from(offset);
                     if !self.stack.peek(0)?.is_truthy() {
-                        self.frame_mut().ip += jump_by;
+                        self.frame_mut().ip += offset;
                     }
                 }
-                OpCode::Loop => {
-                    let jump_by = usize::from(self.read_short());
-                    self.frame_mut().ip -= jump_by;
+                StructOpCode::Loop(offset) => {
+                    let offset = usize::from(offset);
+                    self.frame_mut().ip -= offset;
                 }
-                OpCode::MakeClosure => {
-                    let (name, arity, chunk, upvalue_count) = match self.read_index_as_constant() {
+                StructOpCode::MakeClosure(index) => {
+                    let (name, arity, chunk, upvalue_count) = match self.read_constant(index) {
                         ChunkConstant::FnTemplate {
                             name,
                             arity,
@@ -363,19 +358,17 @@ impl VM {
 
                     let mut upvalues = Vec::with_capacity(upvalue_count);
                     for _i in 0..upvalue_count {
-                        let upvalue_type = self.read_byte();
-                        let upvalue_index = self.read_byte();
-                        let upvalue_ptr = match upvalue_type {
-                            UPVALUE_IMMEDIATE_VALUE => {
-                                let stack_index = self.frame().base_ptr + upvalue_index as usize;
+                        let upvalue_location = self.try_read_upvalue()?;
+                        let upvalue = match upvalue_location {
+                            UpvalueLocation::Immediate(index) => {
+                                let stack_index = self.frame().base_ptr + index as usize;
                                 self.make_open_value(stack_index)
                             }
-                            UPVALUE_RECURSIVE_VALUE => {
-                                self.frame().upvalues[upvalue_index as usize].clone()
+                            UpvalueLocation::Recursive(index) => {
+                                self.frame().upvalues[index as usize].clone()
                             }
-                            _ => return Err(VmError::CannotParseUpvalue),
                         };
-                        upvalues.push(upvalue_ptr);
+                        upvalues.push(upvalue);
                     }
 
                     let closure =
@@ -383,16 +376,16 @@ impl VM {
                             .insert_closure(name, arity, chunk.clone(), Rc::new(upvalues));
                     self.stack.push(closure);
                 }
-                OpCode::GetUpvalue => {
-                    let index = self.read_byte() as usize;
+                StructOpCode::GetUpvalue(index) => {
+                    let index = usize::from(index);
                     let value = match &*self.frame().upvalues[index].borrow() {
                         UpvalueData::Closed(v) => v.clone(),
                         UpvalueData::Open(i) => self.stack.get(*i)?.clone(),
                     };
                     self.stack.push(value);
                 }
-                OpCode::SetUpvalue => {
-                    let index = self.read_byte() as usize;
+                StructOpCode::SetUpvalue(index) => {
+                    let index = usize::from(index);
                     let value = self.stack.peek(0)?.clone();
 
                     let mut upvalue = self.frame().upvalues[index].clone();
@@ -401,17 +394,17 @@ impl VM {
                         UpvalueData::Open(i) => self.stack.set(*i, value)?,
                     };
                 }
-                OpCode::CloseUpvalue => {
+                StructOpCode::CloseUpvalue => {
                     self.close_upvalues(self.stack.len() - 1)?;
                     self.stack.pop()?;
                 }
-                OpCode::MakeClass => {
-                    let name = self.read_index_as_string();
+                StructOpCode::MakeClass(index) => {
+                    let name = self.read_string(index);
                     let klass = self.heap.insert_class(name, HashMap::new());
                     self.stack.push(klass);
                 }
-                OpCode::GetProperty => {
-                    let name = self.read_index_as_string();
+                StructOpCode::GetProperty(index) => {
+                    let name = self.read_string(index);
                     let instance_ptr = self.stack.peek(0)?.to_instance()?;
 
                     let value = match instance_ptr.borrow().search(&name) {
@@ -425,8 +418,8 @@ impl VM {
                     self.stack.pop()?;
                     self.stack.push(value);
                 }
-                OpCode::SetProperty => {
-                    let name = self.read_index_as_string();
+                StructOpCode::SetProperty(index) => {
+                    let name = self.read_string(index);
                     let value = self.stack.peek(0)?.clone();
                     let mut instance_ptr = self.stack.peek(1)?.to_instance()?;
                     instance_ptr.borrow_mut().fields.insert(name, value.clone());
@@ -434,8 +427,8 @@ impl VM {
                     self.stack.pop()?;
                     self.stack.push(value);
                 }
-                OpCode::MakeMethod => {
-                    let method_name = self.read_index_as_string();
+                StructOpCode::MakeMethod(index) => {
+                    let method_name = self.read_string(index);
                     let method_ptr = self.stack.peek(0)?.to_closure()?;
                     let mut class_ptr = self.stack.peek(1)?.to_class()?;
                     class_ptr
@@ -445,9 +438,9 @@ impl VM {
 
                     self.stack.pop()?;
                 }
-                OpCode::Invoke => {
-                    let method_name = self.read_index_as_string();
-                    let num_args: usize = self.read_byte().into();
+                StructOpCode::Invoke(index, num_args) => {
+                    let method_name = self.read_string(index);
+                    let num_args = usize::from(num_args);
 
                     let receiver_ptr = self.stack.peek(num_args)?.to_instance()?;
                     match receiver_ptr.borrow().search(&method_name) {
@@ -459,15 +452,15 @@ impl VM {
                         PropertySearch::Missing => return Err(VmError::UnknownProperty),
                     };
                 }
-                OpCode::Inherit => {
+                StructOpCode::Inherit => {
                     let superclass_ptr = self.stack.peek(1)?.to_class()?;
                     let mut class_ptr = self.stack.peek(0)?.to_class()?;
 
                     let methods = superclass_ptr.borrow().methods.clone();
                     class_ptr.borrow_mut().methods = methods;
                 }
-                OpCode::GetSuper => {
-                    let method_name = self.read_index_as_string();
+                StructOpCode::GetSuper(index) => {
+                    let method_name = self.read_string(index);
                     let class_ptr = self.stack.peek(0)?.to_class()?;
                     let instance_ptr = self.stack.peek(1)?.to_instance()?;
 
@@ -484,9 +477,9 @@ impl VM {
                     self.stack.pop()?;
                     self.stack.push(value);
                 }
-                OpCode::InvokeSuper => {
-                    let method_name = self.read_index_as_string();
-                    let num_args: usize = self.read_byte().into();
+                StructOpCode::InvokeSuper(index, num_args) => {
+                    let method_name = self.read_string(index);
+                    let num_args = usize::from(num_args);
                     let superclass_ptr = self.stack.pop()?.to_class()?;
 
                     match superclass_ptr.borrow().methods.get(&method_name) {
@@ -496,11 +489,11 @@ impl VM {
 
                     self.stack.pop()?;
                 }
-                OpCode::Call => {
-                    let num_args: usize = self.read_byte().into();
+                StructOpCode::Call(num_args) => {
+                    let num_args = usize::from(num_args);
                     self.call(num_args)?;
                 }
-                OpCode::Return => {
+                StructOpCode::Return => {
                     let result = self.pop_frame()?;
 
                     if self.call_stack.is_empty() {
@@ -509,11 +502,11 @@ impl VM {
                         self.stack.push(result);
                     }
                 }
-                OpCode::Print => {
+                StructOpCode::Print => {
                     let value = self.stack.pop()?;
                     println!("[out] {:?}", value);
                 }
-                OpCode::Pop => {
+                StructOpCode::Pop => {
                     self.stack.pop()?;
                 }
             }
@@ -618,36 +611,39 @@ impl VM {
         Ok(result)
     }
 
-    fn read_byte(&mut self) -> u8 {
-        let frame = self.frame_mut();
-        let byte = frame.chunk.read_byte(frame.ip);
-        frame.ip += 1;
-        byte
-    }
-
-    fn read_short(&mut self) -> u16 {
-        let frame = self.frame_mut();
-        let short = frame.chunk.read_short(frame.ip);
-        frame.ip += 2;
-        short
-    }
-
-    fn try_read_op(&mut self) -> Result<OpCode, u8> {
+    fn try_read_op(&mut self) -> VmResult<StructOpCode> {
         let frame = self.frame_mut();
         let result = frame.chunk.try_read_op(frame.ip);
-        frame.ip += 1;
-        result
+
+        match result {
+            Ok((op, next_ip)) => {
+                frame.ip = next_ip;
+                Ok(op)
+            }
+            Err(e) => Err(VmError::from(e)),
+        }
     }
 
-    fn read_index_as_constant(&mut self) -> ChunkConstant {
-        let index = self.read_byte();
+    fn read_constant(&mut self, index: ConstantIndex) -> ChunkConstant {
         self.frame().chunk.read_constant(index)
     }
 
-    fn read_index_as_string(&mut self) -> StringIntern {
-        match self.read_index_as_constant() {
+    fn read_string(&mut self, index: ConstantIndex) -> StringIntern {
+        match self.read_constant(index) {
             ChunkConstant::String(s) => s,
             _ => panic!("Global table contains non-string."),
+        }
+    }
+
+    fn try_read_upvalue(&mut self) -> VmResult<UpvalueLocation> {
+        let frame = self.frame_mut();
+        let result = frame.chunk.try_read_upvalue(frame.ip);
+        match result {
+            Ok(location) => {
+                frame.ip += 2;
+                Ok(location)
+            }
+            Err(e) => Err(VmError::from(e)),
         }
     }
 

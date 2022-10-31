@@ -2,8 +2,8 @@ pub mod constants;
 pub mod cursor;
 pub mod grammar;
 pub mod lexer;
-pub mod operator;
 pub mod parser;
+pub mod parser_utils;
 pub mod span;
 pub mod token;
 

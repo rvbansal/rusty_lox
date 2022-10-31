@@ -1,5 +1,30 @@
-use super::operator::{InfixOperator, LogicalOperator, PrefixOperator};
 use super::span::Span;
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum LogicalOperator {
+    And,
+    Or,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum PrefixOperator {
+    Negate,
+    LogicalNot,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum InfixOperator {
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    EqualTo,
+    NotEqualTo,
+    GreaterThan,
+    GreaterEq,
+    LessThan,
+    LessEq,
+}
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct Stmt {
@@ -60,6 +85,41 @@ pub enum Literal {
     Boolean(bool),
     Str(String),
     Nil,
+}
+
+impl LogicalOperator {
+    pub fn symbol(&self) -> &str {
+        match self {
+            LogicalOperator::And => "and",
+            LogicalOperator::Or => "or",
+        }
+    }
+}
+
+impl PrefixOperator {
+    pub fn symbol(&self) -> &str {
+        match self {
+            PrefixOperator::LogicalNot => "!",
+            PrefixOperator::Negate => "-",
+        }
+    }
+}
+
+impl InfixOperator {
+    pub fn symbol(&self) -> &str {
+        match self {
+            InfixOperator::Add => "+",
+            InfixOperator::Subtract => "-",
+            InfixOperator::Multiply => "*",
+            InfixOperator::Divide => "/",
+            InfixOperator::EqualTo => "==",
+            InfixOperator::NotEqualTo => "!=",
+            InfixOperator::GreaterThan => ">",
+            InfixOperator::GreaterEq => ">=",
+            InfixOperator::LessThan => "<",
+            InfixOperator::LessEq => "<=",
+        }
+    }
 }
 
 impl Stmt {

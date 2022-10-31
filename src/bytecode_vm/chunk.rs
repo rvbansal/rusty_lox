@@ -1,10 +1,9 @@
-use super::opcode::OpCode;
+use super::opcode::{ConstantIndex, OpCodeError, StructOpCode, UpvalueLocation};
 use super::string_interner::StringIntern;
+use std::convert::TryInto;
 
 use std::fmt;
 use std::rc::Rc;
-
-pub type ConstantIndex = u8;
 
 #[derive(Clone)]
 pub enum ChunkConstant {
@@ -47,13 +46,16 @@ impl Chunk {
         self.code.len()
     }
 
-    pub fn write_op(&mut self, op: OpCode, line: usize) {
-        self.write_byte(op.into(), line)
-    }
+    pub fn write_op(&mut self, op: StructOpCode, line: usize) {
+        let orig_len = self.len();
+        StructOpCode::encode(&mut self.code, op);
+        let new_len = self.len();
 
-    pub fn try_read_op(&self, index: usize) -> Result<OpCode, u8> {
-        let byte = self.code[index];
-        OpCode::try_from(byte).map_err(|e| e.number)
+        let delta_len = new_len - orig_len;
+        self.lines.reserve(delta_len);
+        for _ in 0..delta_len {
+            self.lines.push(line);
+        }
     }
 
     pub fn write_byte(&mut self, byte: u8, line: usize) {
@@ -61,50 +63,34 @@ impl Chunk {
         self.lines.push(line);
     }
 
-    pub fn read_byte(&self, index: usize) -> u8 {
-        self.code[index]
+    pub fn patch_byte(&mut self, offset: usize, byte: u8) -> Result<(), OpCodeError> {
+        match self.code.get_mut(offset) {
+            Some(slot) => {
+                *slot = byte;
+                Ok(())
+            }
+            None => Err(OpCodeError::OutOfBounds),
+        }
     }
 
-    pub fn write_short(&mut self, short: u16, line: usize) {
-        let bytes = short.to_be_bytes();
-        self.write_byte(bytes[0], line);
-        self.write_byte(bytes[1], line);
+    pub fn patch_short(&mut self, offset: usize, short: u16) -> Result<(), OpCodeError> {
+        for (i, byte) in short.to_be_bytes().iter().copied().enumerate() {
+            self.patch_byte(offset + i, byte)?;
+        }
+        Ok(())
+    }
+
+    pub fn try_read_op(&self, offset: usize) -> Result<(StructOpCode, usize), OpCodeError> {
+        StructOpCode::decode(&self.code, offset)
+    }
+
+    pub fn read_byte(&self, index: usize) -> u8 {
+        self.code[index]
     }
 
     pub fn read_short(&self, index: usize) -> u16 {
         let bytes = [self.code[index], self.code[index + 1]];
         u16::from_be_bytes(bytes)
-    }
-
-    pub fn write_op_with_byte(&mut self, op: OpCode, byte: u8, line: usize) {
-        self.write_op(op, line);
-        self.write_byte(byte, line);
-    }
-
-    pub fn write_op_with_short(&mut self, op: OpCode, short: u16, line: usize) {
-        self.write_op(op, line);
-        self.write_short(short, line);
-    }
-
-    pub fn emit_jump(&mut self, op: OpCode, line: usize) -> usize {
-        self.write_op_with_short(op, 0xffff, line);
-        self.code.len() - 2
-    }
-
-    pub fn patch_jump(&mut self, index: usize) {
-        let jump_dist = self.code.len() - (index + 2);
-        let jump_bytes = u16::try_from(jump_dist)
-            .expect("Jump distance too large!")
-            .to_be_bytes();
-
-        self.code[index] = jump_bytes[0];
-        self.code[index + 1] = jump_bytes[1];
-    }
-
-    pub fn emit_loop(&mut self, loop_start: usize, line: usize) {
-        let jump_dist = (self.code.len() + 3) - loop_start;
-        let jump_dist = u16::try_from(jump_dist).expect("Loop distance too large!");
-        self.write_op_with_short(OpCode::Loop, jump_dist, line);
     }
 
     pub fn add_constant(&mut self, constant: ChunkConstant) -> ConstantIndex {
@@ -117,6 +103,16 @@ impl Chunk {
 
     pub fn read_constant(&self, index: ConstantIndex) -> ChunkConstant {
         self.constants[index as usize].clone()
+    }
+
+    pub fn write_upvalue(&mut self, location: UpvalueLocation, line: usize) {
+        UpvalueLocation::encode(&mut self.code, location);
+        self.lines.push(line);
+        self.lines.push(line);
+    }
+
+    pub fn try_read_upvalue(&self, offset: usize) -> Result<UpvalueLocation, OpCodeError> {
+        UpvalueLocation::decode(&self.code, offset)
     }
 
     pub fn get_line(&self, index: usize) -> usize {
@@ -147,10 +143,9 @@ impl Chunk {
         }
 
         macro_rules! format_print_with_constant {
-            ($op:expr) => {{
-                let index = self.read_byte(offset + 1);
-                let constant = self.read_constant(index);
-                format_print_three!($op, index, constant);
+            ($op:expr, $index:expr) => {{
+                let constant = self.read_constant($index);
+                format_print_three!($op, $index, constant);
             }};
         }
 
@@ -163,43 +158,41 @@ impl Chunk {
         };
 
         // Print opcode and operands
-        let byte_value = self.code[offset];
-        let opcode = match OpCode::try_from(byte_value) {
-            Ok(opcode) => opcode,
+        let (opcode, new_offset) = match StructOpCode::decode(&self.code, offset) {
+            Ok(t) => t,
             Err(_) => {
-                println!("Unknown upcode {}.", byte_value);
+                println!("Unknown upcode {}.", self.code[offset]);
                 return offset + 1;
             }
         };
 
-        let mut variable_args_size: Option<usize> = None;
-
         match opcode {
-            OpCode::True => println!("OP_TRUE"),
-            OpCode::False => println!("OP_FALSE"),
-            OpCode::Nil => println!("OP_NIL"),
-            OpCode::Constant => format_print_with_constant!("OP_CONSTANT"),
-            OpCode::Add => println!("OP_ADD"),
-            OpCode::Subtract => println!("OP_SUBTRACT"),
-            OpCode::Multiply => println!("OP_MULTIPLY"),
-            OpCode::Divide => println!("OP_DIVIDE"),
-            OpCode::Negate => println!("OP_NEGATE"),
-            OpCode::Not => println!("OP_NOT"),
-            OpCode::Equal => println!("OP_EQUAL"),
-            OpCode::GreaterThan => println!("OP_GREATER"),
-            OpCode::LessThan => println!("OP_LESS"),
-            OpCode::DefineGlobal => format_print_with_constant!("OP_DEFINE_GLOBAL"),
-            OpCode::GetGlobal => format_print_with_constant!("OP_GET_GLOBAL"),
-            OpCode::SetGlobal => format_print_with_constant!("OP_SET_GLOBAL"),
-            OpCode::GetLocal => format_print_two!("OP_GET_LOCAL", self.read_byte(offset + 1)),
-            OpCode::SetLocal => format_print_two!("OP_SET_LOCAL", self.read_byte(offset + 1)),
-            OpCode::Jump => format_print_two!("OP_JUMP", self.read_short(offset + 1)),
-            OpCode::JumpIfFalse => {
-                format_print_two!("OP_JUMP_IF_FALSE", self.read_short(offset + 1))
+            StructOpCode::True => println!("OP_TRUE"),
+            StructOpCode::False => println!("OP_FALSE"),
+            StructOpCode::Nil => println!("OP_NIL"),
+            StructOpCode::Constant(index) => format_print_with_constant!("OP_CONSTANT", index),
+            StructOpCode::Add => println!("OP_ADD"),
+            StructOpCode::Subtract => println!("OP_SUBTRACT"),
+            StructOpCode::Multiply => println!("OP_MULTIPLY"),
+            StructOpCode::Divide => println!("OP_DIVIDE"),
+            StructOpCode::Negate => println!("OP_NEGATE"),
+            StructOpCode::Not => println!("OP_NOT"),
+            StructOpCode::Equal => println!("OP_EQUAL"),
+            StructOpCode::GreaterThan => println!("OP_GREATER"),
+            StructOpCode::LessThan => println!("OP_LESS"),
+            StructOpCode::DefineGlobal(index) => {
+                format_print_with_constant!("OP_DEFINE_GLOBAL", index)
             }
-            OpCode::Loop => format_print_two!("OP_LOOP", self.read_short(offset + 1)),
-            OpCode::MakeClosure => {
-                let index = self.read_byte(offset + 1);
+            StructOpCode::GetGlobal(index) => format_print_with_constant!("OP_GET_GLOBAL", index),
+            StructOpCode::SetGlobal(index) => format_print_with_constant!("OP_SET_GLOBAL", index),
+            StructOpCode::GetLocal(index) => format_print_two!("OP_GET_LOCAL", index),
+            StructOpCode::SetLocal(index) => format_print_two!("OP_SET_LOCAL", index),
+            StructOpCode::Jump(distance) => format_print_two!("OP_JUMP", distance),
+            StructOpCode::JumpIfFalse(distance) => {
+                format_print_two!("OP_JUMP_IF_FALSE", distance)
+            }
+            StructOpCode::Loop(distance) => format_print_two!("OP_LOOP", distance),
+            StructOpCode::MakeClosure(index) => {
                 let constant = self.read_constant(index);
                 let upvalue_count = match constant {
                     ChunkConstant::FnTemplate { upvalue_count, .. } => upvalue_count,
@@ -208,46 +201,43 @@ impl Chunk {
                 format_print_three!("OP_MAKE_CLOSURE", index, constant);
 
                 for i in 0..upvalue_count {
-                    let kind = self.read_byte(offset + 2 + 2 * i);
-                    let index = self.read_byte(offset + 2 + 2 * i + 1);
                     print!("{:37}: ", i);
-                    match kind {
-                        1 => println!("local   #{}", index),
-                        0 => println!("upvalue #{}", index),
-                        _ => println!("?       #{}", index),
-                    };
+                    match UpvalueLocation::decode(&self.code, offset + 2 + 2 * i) {
+                        Ok(location) => match location {
+                            UpvalueLocation::Immediate(index) => println!("local   #{}", index),
+                            UpvalueLocation::Recursive(index) => println!("upvalue #{}", index),
+                        },
+                        Err(_) => println!("?       #{}", index),
+                    }
                 }
-                variable_args_size = Some(1 + 2 * upvalue_count);
             }
-            OpCode::GetUpvalue => format_print_two!("OP_GET_UPVALUE", self.read_byte(offset + 1)),
-            OpCode::SetUpvalue => format_print_two!("OP_SET_UPVALUE", self.read_byte(offset + 1)),
-            OpCode::CloseUpvalue => println!("OP_CLOSE_UPVALUE"),
-            OpCode::MakeClass => format_print_with_constant!("OP_MAKE_CLASS"),
-            OpCode::GetProperty => format_print_with_constant!("OP_GET_PROPERTY"),
-            OpCode::SetProperty => format_print_with_constant!("OP_SET_PROPERTY"),
-            OpCode::MakeMethod => format_print_with_constant!("OP_MAKE_METHOD"),
-            OpCode::Invoke => {
-                let index = self.read_byte(offset + 1);
+            StructOpCode::GetUpvalue(index) => format_print_two!("OP_GET_UPVALUE", index),
+            StructOpCode::SetUpvalue(index) => format_print_two!("OP_SET_UPVALUE", index),
+            StructOpCode::CloseUpvalue => println!("OP_CLOSE_UPVALUE"),
+            StructOpCode::MakeClass(index) => format_print_with_constant!("OP_MAKE_CLASS", index),
+            StructOpCode::GetProperty(index) => {
+                format_print_with_constant!("OP_GET_PROPERTY", index)
+            }
+            StructOpCode::SetProperty(index) => {
+                format_print_with_constant!("OP_SET_PROPERTY", index)
+            }
+            StructOpCode::MakeMethod(index) => format_print_with_constant!("OP_MAKE_METHOD", index),
+            StructOpCode::Invoke(index, num_args) => {
                 let method_name = self.read_constant(index);
-                let num_args = self.read_byte(offset + 2);
                 format_print_three!("OP_INVOKE", method_name, num_args);
             }
-            OpCode::Inherit => println!("OP_INHERIT"),
-            OpCode::GetSuper => format_print_with_constant!("OP_GET_SUPER"),
-            OpCode::InvokeSuper => {
-                let index = self.read_byte(offset + 1);
+            StructOpCode::Inherit => println!("OP_INHERIT"),
+            StructOpCode::GetSuper(index) => format_print_with_constant!("OP_GET_SUPER", index),
+            StructOpCode::InvokeSuper(index, num_args) => {
                 let method_name = self.read_constant(index);
-                let num_args = self.read_byte(offset + 2);
                 format_print_three!("OP_INVOKE", method_name, num_args);
             }
-            OpCode::Call => format_print_two!("OP_CALL", self.read_byte(offset + 1)),
-            OpCode::Return => println!("OP_RETURN"),
-            OpCode::Print => println!("OP_PRINT"),
-            OpCode::Pop => println!("OP_POP"),
+            StructOpCode::Call(num_args) => format_print_two!("OP_CALL", num_args),
+            StructOpCode::Return => println!("OP_RETURN"),
+            StructOpCode::Print => println!("OP_PRINT"),
+            StructOpCode::Pop => println!("OP_POP"),
         };
 
-        let arg_bytes = variable_args_size.xor(opcode.operand_size_in_bytes());
-
-        offset + arg_bytes.expect("Instruction operand bytes unparseable.") + 1
+        new_offset
     }
 }
