@@ -151,7 +151,7 @@ impl Chunk {
                 let index = self.read_byte(offset + 1);
                 let constant = self.read_constant(index);
                 format_print_three!($op, index, constant);
-            };};
+            }};
         }
 
         // Print byte offset and line.
@@ -238,7 +238,7 @@ impl Chunk {
                 let index = self.read_byte(offset + 1);
                 let method_name = self.read_constant(index);
                 let num_args = self.read_byte(offset + 2);
-                format_print_three!("OP_INVOKE_SUPER", method_name, num_args);
+                format_print_three!("OP_INVOKE", method_name, num_args);
             }
             OpCode::Call => format_print_two!("OP_CALL", self.read_byte(offset + 1)),
             OpCode::Return => println!("OP_RETURN"),
