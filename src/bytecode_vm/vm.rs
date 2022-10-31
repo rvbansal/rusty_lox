@@ -73,7 +73,7 @@ impl VM {
             call_stack: vec![],
             stack: vec![],
             open_upvalues: vec![],
-            string_table: string_table,
+            string_table,
             globals: HashMap::new(),
             init_string,
             closure_heap: GcHeap::new(),
@@ -406,6 +406,61 @@ impl VM {
                         return Err(VmError::UnknownProperty);
                     }
                 }
+                OpCode::Inherit => {
+                    let superclass_ptr = match self.peek(1)? {
+                        Value::Class(ptr) => ptr,
+                        _ => return Err(VmError::NotAClass),
+                    };
+
+                    let mut class_ptr = match self.peek(0)? {
+                        Value::Class(ptr) => ptr,
+                        _ => return Err(VmError::NotAClass),
+                    };
+
+                    let methods = superclass_ptr.borrow().methods.clone();
+                    class_ptr.borrow_mut().methods = methods;
+                }
+                OpCode::GetSuper => {
+                    let index = self.frame_mut().read_byte();
+                    let method_name = self.read_string(index);
+
+                    let method_ptr = match self.peek(0)? {
+                        Value::Class(ptr) => match ptr.borrow().methods.get(&method_name) {
+                            Some(method_ptr) => method_ptr.clone(),
+                            None => return Err(VmError::UnknownProperty),
+                        },
+                        _ => return Err(VmError::NotAClass),
+                    };
+
+                    let instance_ptr = match self.peek(1)? {
+                        Value::Instance(ptr) => ptr,
+                        _ => return Err(VmError::NotAnInstance),
+                    };
+
+                    let value = Value::BoundMethod(self.bound_method_heap.insert(LoxBoundMethod {
+                        receiver: instance_ptr.clone(),
+                        closure: method_ptr,
+                    }));
+
+                    self.pop()?;
+                    self.pop()?;
+                    self.push(value);
+                }
+                OpCode::InvokeSuper => {
+                    let index = self.frame_mut().read_byte();
+                    let method_name = self.read_string(index);
+                    let num_args: usize = self.frame_mut().read_byte().into();
+
+                    let superclass_ptr = match self.pop()? {
+                        Value::Class(ptr) => ptr,
+                        _ => return Err(VmError::NotAClass),
+                    };
+
+                    match superclass_ptr.borrow().methods.get(&method_name) {
+                        Some(method) => self.call_closure(method.clone(), num_args)?,
+                        None => return Err(VmError::UnknownProperty),
+                    };
+                }
                 OpCode::Call => {
                     let num_args: usize = self.frame_mut().read_byte().into();
                     self.call(self.peek(num_args)?, num_args)?;
@@ -446,7 +501,7 @@ impl VM {
                         self.push(return_value);
                         Ok(())
                     }
-                    Err(s) => return Err(VmError::NativeFnError(s)),
+                    Err(s) => Err(VmError::NativeFnError(s)),
                 }
             }
             Value::Class(ptr) => {
@@ -472,7 +527,7 @@ impl VM {
                 self.stack[instance_slot] = Value::Instance(ptr.borrow().receiver.clone());
                 self.call_closure(ptr.borrow().closure.clone(), num_args)
             }
-            _ => return Err(VmError::NotCallable),
+            _ => Err(VmError::NotCallable),
         }
     }
 

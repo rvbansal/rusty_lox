@@ -18,6 +18,7 @@ type UpvalueIndex = u8;
 
 const THIS_STR: &str = "this";
 const INIT_STR: &str = "init";
+const SUPER_STR: &str = "super";
 
 #[derive(Clone, PartialEq, Eq)]
 pub enum Upvalue {
@@ -207,14 +208,28 @@ impl<'s> Compiler<'s> {
                 }
                 self.chunk().write_op(OpCode::Return, line);
             }
-            StmtType::ClassDecl(name, _superclass, methods) => {
+            StmtType::ClassDecl(name, superclass, methods) => {
                 self.declare_variable(name)?;
                 let index = self.add_string_constant(name);
                 self.chunk()
                     .write_op_with_byte(OpCode::MakeClass, index, line);
                 self.define_variable(name, line)?;
                 // Put class on stack
-                self.get_variable(name, line);
+                if let Some(superclass) = superclass {
+                    if superclass.name == *name {
+                        panic!("Superclass is same as subclass.");
+                    }
+
+                    self.begin_scope();
+                    self.declare_variable(SUPER_STR)?;
+                    self.define_variable(SUPER_STR, line)?;
+
+                    self.get_variable(&superclass.name, line)?;
+                    self.get_variable(name, line);
+                    self.chunk().write_op(OpCode::Inherit, line);
+                } else {
+                    self.get_variable(name, line)?;
+                }
 
                 // Put methods on stack
                 for method in methods.iter() {
@@ -225,7 +240,7 @@ impl<'s> Compiler<'s> {
                     };
 
                     self.compile_func_decl(
-                        &method,
+                        method,
                         method.body.span.start_pos.line_no,
                         method_type,
                     )?;
@@ -239,6 +254,10 @@ impl<'s> Compiler<'s> {
 
                 // Pop class of stack
                 self.chunk().write_op(OpCode::Pop, line);
+
+                if superclass.is_some() {
+                    self.end_scope();
+                }
             }
         };
 
@@ -275,7 +294,14 @@ impl<'s> Compiler<'s> {
             ExprType::This(_) => {
                 self.get_variable(THIS_STR, line)?;
             }
-            _ => panic!("Bytecode vm cannot compile this expression right now."),
+            ExprType::Super(_, method_name) => {
+                self.get_variable(THIS_STR, line)?;
+                self.get_variable(SUPER_STR, line)?;
+
+                let index = self.add_string_constant(method_name);
+                self.chunk()
+                    .write_op_with_byte(OpCode::GetSuper, index, line);
+            }
         }
 
         Ok(())
@@ -488,27 +514,47 @@ impl<'s> Compiler<'s> {
 
     fn compile_call(&mut self, callee: &Expr, args: &Vec<Expr>) -> CompilerResult<()> {
         let num_args = u8::try_from(args.len()).expect("Too many function arguments.");
-        let line = callee.span.start_pos.line_no;
 
-        if let ExprType::Get(instance_expr, method_name) = &callee.expr {
-            // Method on an instance, we use invoke.
+        match &callee.expr {
+            ExprType::Get(instance_expr, method_name) => {
+                // Method on an instance, we use invoke.
+                let line = callee.span.end_pos.line_no;
+                self.compile_expression(instance_expr)?;
+                for arg in args.iter() {
+                    self.compile_expression(arg)?;
+                }
+                let index = self.add_string_constant(method_name);
 
-            self.compile_expression(instance_expr)?;
-            for arg in args.iter() {
-                self.compile_expression(arg)?;
+                self.chunk().write_op(OpCode::Invoke, line);
+                self.chunk().write_byte(index, line);
+                self.chunk().write_byte(num_args, line);
             }
-            let index = self.add_string_constant(method_name);
+            ExprType::Super(_, method_name) => {
+                // Method on super of instance.
+                let line = callee.span.start_pos.line_no;
+                self.get_variable(THIS_STR, line)?;
+                for arg in args.iter() {
+                    self.compile_expression(arg)?;
+                }
+                self.get_variable(SUPER_STR, line)?;
 
-            self.chunk().write_op(OpCode::Invoke, line);
-            self.chunk().write_byte(index, line);
-            self.chunk().write_byte(num_args, line);
-        } else {
-            self.compile_expression(callee)?;
-            for arg in args.iter() {
-                self.compile_expression(arg)?;
+                let line = callee.span.end_pos.line_no;
+                let index = self.add_string_constant(method_name);
+
+                self.chunk().write_op(OpCode::InvokeSuper, line);
+                self.chunk().write_byte(index, line);
+                self.chunk().write_byte(num_args, line);
             }
-            self.chunk()
-                .write_op_with_byte(OpCode::Call, num_args, line);
+            _ => {
+                // Usual call.
+                let line = callee.span.end_pos.line_no;
+                self.compile_expression(callee)?;
+                for arg in args.iter() {
+                    self.compile_expression(arg)?;
+                }
+                self.chunk()
+                    .write_op_with_byte(OpCode::Call, num_args, line);
+            }
         }
 
         Ok(())
