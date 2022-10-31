@@ -237,7 +237,7 @@ impl VM {
                 let ip = frame.ip;
                 let base_ptr = frame.base_ptr;
 
-                println!("STACK     {:?}", self.stack);
+                println!("STACK     {:?}", self.stack.stack);
                 println!(
                     "ip = {}, bp = {} ({:?})",
                     ip,
