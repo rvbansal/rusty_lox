@@ -692,7 +692,8 @@ impl VM {
     }
 
     fn make_open_value(&mut self, stack_index: usize) -> UpvaluePtr {
-        // Search
+        // Sibling closures need to share an upvalue, so we first
+        // check if already exists and clone it. Otherwise, create a new one. 
 
         fn index_match(upvalue: &UpvaluePtr, stack_index: usize) -> bool {
             stack_index
