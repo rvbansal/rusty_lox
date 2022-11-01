@@ -82,7 +82,7 @@ impl<'src> Lexer<'src> {
             _ if is_identified_char(ch) => self.lex_identifier_or_kw(byte_idx),
 
             // Unrecognized token.
-            _ => Token::LexerError(format!("Unrecognized token `{}`", ch)),
+            _ => Token::LexerError(format!("Unexpected character '{}'", ch)),
         };
 
         Some(token)
@@ -120,7 +120,7 @@ impl<'src> Lexer<'src> {
                 let string = self.source[start_idx..end_idx].to_owned();
                 Token::String(string)
             }
-            None => Token::LexerError("No terminal \" in string.".to_owned()),
+            None => Token::LexerError("Unterminated string".to_owned()),
             _ => unreachable!(),
         }
     }

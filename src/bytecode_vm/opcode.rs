@@ -7,7 +7,6 @@ pub type LocalIndex = u8;
 pub const MAX_UPVALUES: usize = 256;
 pub type UpvalueIndex = u8;
 
-pub const MAX_CONSTANTS: usize = 256;
 pub type ConstantIndex = u8;
 
 pub const UPVALUE_IMMEDIATE_VALUE: u8 = 1;
@@ -103,7 +102,7 @@ pub enum OpCode {
     Pop,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum UpvalueLocation {
     Immediate(LocalIndex),
     Recursive(UpvalueIndex),
@@ -178,8 +177,6 @@ impl StructOpCode {
     }
 
     pub fn decode(code: &[u8], offset: usize) -> Result<(StructOpCode, usize), OpCodeError> {
-        use std::convert::{TryFrom, TryInto};
-
         macro_rules! read {
             ($opcode: ident) => {
                 Ok((StructOpCode::$opcode, offset + 1))
@@ -288,9 +285,9 @@ impl UpvalueLocation {
         }
     }
 
-    pub fn decode(code: &Vec<u8>, offset: usize) -> Result<UpvalueLocation, OpCodeError> {
+    pub fn decode(code: &[u8], offset: usize) -> Result<UpvalueLocation, OpCodeError> {
         let location = code.get(offset).ok_or(OpCodeError::OutOfBounds)?;
-        let index = code.get(offset).ok_or(OpCodeError::OutOfBounds)?;
+        let index = code.get(offset + 1).ok_or(OpCodeError::OutOfBounds)?;
         match *location {
             UPVALUE_IMMEDIATE_VALUE => Ok(UpvalueLocation::Immediate(*index)),
             UPVALUE_RECURSIVE_VALUE => Ok(UpvalueLocation::Recursive(*index)),

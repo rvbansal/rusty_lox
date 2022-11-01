@@ -1,2 +1,0 @@
-var clock_time = clock();
-print clock_time;

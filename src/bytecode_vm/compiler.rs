@@ -1,5 +1,8 @@
-use crate::lox_frontend::grammar::{Expr, ExprType, FuncInfo, Literal, Stmt, StmtType};
-use crate::lox_frontend::grammar::{InfixOperator, LogicalOperator, PrefixOperator};
+use crate::lox_frontend::grammar::{
+    Identifier, InfixOperator, LogicalOperator, PrefixOperator,
+    Expr, ExprType, FuncInfo, Literal, Stmt, StmtType
+};
+use crate::lox_frontend::span::Span;
 
 use super::chunk::{Chunk, ChunkConstant};
 use super::errors::{CompilerError, CompilerResult};
@@ -24,11 +27,13 @@ enum VariableLocator {
 
 #[derive(PartialEq, Eq)]
 enum FunctionType {
+    Root,
     Function,
     Method,
     Initializer,
 }
 
+#[derive(Debug)]
 struct Local {
     name: String,
     scope_depth: u32,
@@ -41,16 +46,32 @@ struct CompilerContext {
     locals: Vec<Local>,
     upvalues: Vec<UpvalueLocation>,
     scope_depth: u32,
-    is_initializer: bool,
+    fn_type: FunctionType,
+}
+
+struct ClassContext {
+    contains_superclass: bool,
 }
 
 pub struct Compiler<'s> {
     string_table: &'s mut StringInterner,
     context_stack: Vec<CompilerContext>,
+    class_stack: Vec<ClassContext>,
+}
+
+impl FunctionType {
+    fn inside_class(&self) -> bool {
+        match self {
+            FunctionType::Root | FunctionType::Function => false,
+            FunctionType::Method | FunctionType::Initializer => true,
+        }
+    }
 }
 
 impl CompilerContext {
-    fn new(reserved_name: &str) -> Self {
+    fn new(fn_type: FunctionType) -> Self {
+        let reserved_name = if fn_type.inside_class() { THIS_STR } else { "" };
+
         let reserved_local = Local {
             name: reserved_name.to_owned(),
             scope_depth: 0,
@@ -62,7 +83,7 @@ impl CompilerContext {
             locals: vec![reserved_local],
             upvalues: vec![],
             scope_depth: 0,
-            is_initializer: false,
+            fn_type,
         }
     }
 
@@ -129,18 +150,20 @@ impl<'s> Compiler<'s> {
         Compiler {
             string_table,
             context_stack: vec![],
+            class_stack: vec![],
         }
     }
 
     pub fn compile(&mut self, stmts: &[Stmt]) -> CompilerResult<Chunk> {
         // Push a new compiler context and reserve first slot.
-        self.context_stack.push(CompilerContext::new(""));
+        self.context_stack
+            .push(CompilerContext::new(FunctionType::Root));
 
         // Compile statements.
         for stmt in stmts.iter() {
             self.compile_statement(stmt)?;
         }
-        self.emit_op(StructOpCode::Return, 99);
+        self.emit_op(StructOpCode::Return, Span::default());
 
         let main_context = self.context_stack.pop().expect("Empty context stack.");
         self.print_chunk("<main>", &main_context.chunk);
@@ -149,20 +172,19 @@ impl<'s> Compiler<'s> {
     }
 
     pub fn compile_statement(&mut self, stmt: &Stmt) -> CompilerResult<()> {
-        let line = stmt.span.start_pos.line_no;
         match &stmt.stmt {
             StmtType::Expression(expr) => {
                 self.compile_expression(expr)?;
-                self.emit_op(StructOpCode::Pop, line);
+                self.emit_op(StructOpCode::Pop, stmt.span);
             }
             StmtType::Print(expr) => {
                 self.compile_expression(expr)?;
-                self.emit_op(StructOpCode::Print, line);
+                self.emit_op(StructOpCode::Print, stmt.span);
             }
-            StmtType::VariableDecl(name, expr) => {
+            StmtType::VariableDecl(ident, expr) => {
                 self.compile_expression(expr)?;
-                self.declare_variable(name)?;
-                self.define_variable(name, line)?;
+                self.declare_variable(&ident.name)?;
+                self.define_variable(ident)?;
             }
             StmtType::Block(stmts) => {
                 self.begin_scope();
@@ -172,80 +194,80 @@ impl<'s> Compiler<'s> {
                 self.end_scope();
             }
             StmtType::IfElse(condition, if_body, else_body) => {
-                self.compile_if_else(condition, if_body.as_ref(), else_body.as_deref())?;
+                self.compile_if_else(condition, if_body.as_ref(), else_body.as_deref(), stmt.span)?;
             }
             StmtType::While(condition, body) => {
-                self.compile_while(condition, body.as_ref())?;
+                self.compile_while(condition, body.as_ref(), stmt.span)?;
+            }
+            StmtType::For(initializer, condition, increment, body) => {
+                self.compile_for(
+                    initializer.as_deref(),
+                    condition.as_deref(),
+                    increment.as_deref(),
+                    body.as_ref(),
+                    stmt.span,
+                )?;
             }
             StmtType::FuncDecl(fn_decl) => {
                 // Recursive functions can refer to themselves, so declare a local
                 // func with the correct name before compiling it.
-                self.declare_variable(&fn_decl.name)?;
+                self.declare_variable(&fn_decl.ident.name)?;
                 if self.get_context().scope_depth != 0 {
                     self.get_context_mut().mark_last_local_initialized();
                 }
-                self.compile_func_decl(fn_decl, line, FunctionType::Function)?;
-                self.define_variable(&fn_decl.name, line)?;
+                self.compile_func_decl(fn_decl, FunctionType::Function)?;
+                self.define_variable(&fn_decl.ident)?;
             }
             StmtType::Return(expr) => {
-                match expr {
-                    Some(expr) => {
-                        self.compile_expression(expr)?;
-                    }
-                    None => {
-                        self.emit_default_return(line);
-                    }
-                }
-                self.emit_op(StructOpCode::Return, line);
+                self.compile_return(expr.as_ref(), stmt.span)?;
             }
-            StmtType::ClassDecl(name, superclass, methods) => {
-                self.declare_variable(name)?;
-                let index = self.add_string_constant(name);
-                self.emit_op(StructOpCode::MakeClass(index), line);
-                self.define_variable(name, line)?;
+            StmtType::ClassDecl(ident, superclass, methods) => {
+                self.declare_variable(&ident.name)?;
+                let index = self.add_string_constant(&ident.name)?;
+                self.emit_op(StructOpCode::MakeClass(index), ident.span);
+                self.define_variable(ident)?;
+                self.class_stack.push(ClassContext {
+                    contains_superclass: superclass.is_some(),
+                });
+
                 // Put class on stack
                 if let Some(superclass) = superclass {
-                    if superclass == name {
-                        panic!("Superclass is same as subclass.");
+                    if superclass.name == ident.name {
+                        return Err(CompilerError::SelfInherit(ident.name.clone()));
                     }
+                    let synthetic_super = self.synthetic_id(SUPER_STR, stmt.span);
 
                     self.begin_scope();
-                    self.declare_variable(SUPER_STR)?;
-                    self.define_variable(SUPER_STR, line)?;
+                    self.declare_variable(&synthetic_super.name)?;
+                    self.define_variable(&synthetic_super)?;
 
-                    self.get_variable(superclass, line)?;
-                    self.get_variable(name, line)?;
-                    self.emit_op(StructOpCode::Inherit, line);
+                    self.get_variable(superclass)?;
+                    self.get_variable(ident)?;
+                    self.emit_op(StructOpCode::Inherit, superclass.span);
                 } else {
-                    self.get_variable(name, line)?;
+                    self.get_variable(ident)?;
                 }
 
                 // Put methods on stack
                 for method in methods.iter() {
-                    let method_type = if method.name == INIT_STR {
+                    let method_type = if method.ident.name == INIT_STR {
                         FunctionType::Initializer
                     } else {
                         FunctionType::Method
                     };
 
-                    self.compile_func_decl(
-                        method,
-                        method.body.span.start_pos.line_no,
-                        method_type,
-                    )?;
-                    let index = self.add_string_constant(&method.name);
-                    self.emit_op(
-                        StructOpCode::MakeMethod(index),
-                        method.body.span.end_pos.line_no,
-                    );
+                    self.compile_func_decl(method, method_type)?;
+                    let index = self.add_string_constant(&method.ident.name)?;
+                    self.emit_op(StructOpCode::MakeMethod(index), method.span);
                 }
 
                 // Pop class of stack
-                self.emit_op(StructOpCode::Pop, line);
+                self.emit_op(StructOpCode::Pop, ident.span);
 
                 if superclass.is_some() {
                     self.end_scope();
                 }
+                self.class_stack.pop();
             }
         };
 
@@ -253,39 +275,45 @@ impl<'s> Compiler<'s> {
     }
 
     fn compile_expression(&mut self, expr: &Expr) -> CompilerResult<()> {
-        let line = expr.span.start_pos.line_no;
+        let _line = expr.span.start_pos.line_no;
 
         match &expr.expr {
-            ExprType::Literal(l) => self.compile_literal(l, line),
-            ExprType::Infix(op, lhs, rhs) => self.compile_infix(*op, lhs, rhs)?,
-            ExprType::Prefix(op, expr) => self.compile_prefix(*op, expr)?,
-            ExprType::Variable(var) => self.get_variable(var, line)?,
-            ExprType::Assignment(var, expr) => self.set_variable(var, expr, line)?,
+            ExprType::Literal(l) => self.compile_literal(l, expr.span)?,
+            ExprType::Infix(op, lhs, rhs) => self.compile_infix(*op, lhs, rhs, expr.span)?,
+            ExprType::Prefix(op, expr) => self.compile_prefix(*op, expr, expr.span)?,
+            ExprType::Variable(var) => self.get_variable(var)?,
+            ExprType::Assignment(var, expr) => self.set_variable(var, expr)?,
             ExprType::Logical(op, lhs, rhs) => match op {
-                LogicalOperator::And => self.compile_and(lhs, rhs)?,
-                LogicalOperator::Or => self.compile_or(lhs, rhs)?,
+                LogicalOperator::And => self.compile_and(lhs, rhs, expr.span)?,
+                LogicalOperator::Or => self.compile_or(lhs, rhs, expr.span)?,
             },
             ExprType::Call(callee, args) => self.compile_call(callee, args)?,
-            ExprType::Get(expr, name) => {
-                let index = self.add_string_constant(name);
+            ExprType::Get(expr, property) => {
+                let index = self.add_string_constant(&property.name)?;
                 self.compile_expression(expr)?;
-                self.emit_op(StructOpCode::GetProperty(index), line);
+                self.emit_op(StructOpCode::GetProperty(index), property.span);
             }
-            ExprType::Set(expr, name, value_expr) => {
-                let index = self.add_string_constant(name);
+            ExprType::Set(expr, property, value_expr) => {
+                let index = self.add_string_constant(&property.name)?;
                 self.compile_expression(expr)?;
                 self.compile_expression(value_expr)?;
-                self.emit_op(StructOpCode::SetProperty(index), line);
+                self.emit_op(StructOpCode::SetProperty(index), property.span);
             }
             ExprType::This => {
-                self.get_variable(THIS_STR, line)?;
+                if self.class_stack.is_empty() {
+                    return Err(CompilerError::ThisOutsideClass);
+                }
+                let synthetic_this = self.synthetic_id(THIS_STR, expr.span);
+                self.get_variable(&synthetic_this)?;
             }
-            ExprType::Super(method_name) => {
-                self.get_variable(THIS_STR, line)?;
-                self.get_variable(SUPER_STR, line)?;
-
-                let index = self.add_string_constant(method_name);
-                self.emit_op(StructOpCode::GetSuper(index), line);
+            ExprType::Super(method) => {
+                self.check_super_validity()?;
+                let synthetic_this = self.synthetic_id(THIS_STR, expr.span);
+                let synthetic_super = self.synthetic_id(SUPER_STR, expr.span);
+                self.get_variable(&synthetic_this)?;
+                self.get_variable(&synthetic_super)?;
+                let index = self.add_string_constant(&method.name)?;
+                self.emit_op(StructOpCode::GetSuper(index), expr.span);
             }
         }
 
@@ -295,39 +323,33 @@ impl<'s> Compiler<'s> {
     fn compile_func_decl(
         &mut self,
         fn_decl: &FuncInfo,
-        line: usize,
-        func_type: FunctionType,
+        fn_type: FunctionType,
     ) -> CompilerResult<()> {
         // New compiler context for the function.
-        let mut func_context = CompilerContext::new(match func_type {
-            FunctionType::Function => "",
-            FunctionType::Method | FunctionType::Initializer => THIS_STR,
-        });
-        if func_type == FunctionType::Initializer {
-            func_context.is_initializer = true;
-        }
+        let new_context = CompilerContext::new(fn_type);
 
-        self.context_stack.push(func_context);
+        self.context_stack.push(new_context);
         self.begin_scope();
 
         // Declare and define arguments.
         for param in fn_decl.params.iter() {
-            self.declare_variable(param)?;
-            self.define_variable(param, line)?;
+            self.declare_variable(&param.name)?;
+            self.define_variable(param)?;
         }
 
         // Compile function.
-        self.compile_statement(fn_decl.body.as_ref())?;
-        let last_line = fn_decl.body.span.end_pos.line_no;
-        self.emit_default_return(last_line);
-        self.emit_op(StructOpCode::Return, last_line);
+        for stmt in fn_decl.body.iter() {
+            self.compile_statement(stmt)?;
+        }
+        self.compile_return(None, fn_decl.span)?;
+        self.emit_op(StructOpCode::Return, fn_decl.span);
 
         // No need to end scope b/c we will pop off function context all together.
         // Build function data.
         let fn_context = self.context_stack.pop().expect("Empty context stack.");
-        let fn_name = self.string_table.get_string_intern(&fn_decl.name);
+        let fn_name = self.string_table.get_string_intern(&fn_decl.ident.name);
 
-        self.print_chunk(&fn_decl.name, &fn_context.chunk);
+        self.print_chunk(&fn_decl.ident.name, &fn_context.chunk);
 
         let fn_template = ChunkConstant::FnTemplate {
             name: fn_name,
@@ -335,76 +357,85 @@ impl<'s> Compiler<'s> {
             chunk: Rc::new(fn_context.chunk),
             upvalue_count: fn_context.upvalues.len(),
         };
-        let index = self.add_constant(fn_template);
+        let index = self.add_constant(fn_template)?;
 
-        self.emit_op(StructOpCode::MakeClosure(index), line);
+        self.emit_op(StructOpCode::MakeClosure(index), fn_decl.span);
         for upvalue in fn_context.upvalues.iter().cloned() {
-            self.chunk().write_upvalue(upvalue, line);
+            self.chunk()
+                .write_upvalue(upvalue, fn_decl.span.start_pos.line_no);
         }
 
         Ok(())
     }
 
-    fn compile_literal(&mut self, l: &Literal, line: usize) {
+    fn compile_literal(&mut self, l: &Literal, span: Span) -> CompilerResult<()> {
         match l {
             Literal::Number(n) => {
                 let value = ChunkConstant::Number(*n);
-                let index = self.add_constant(value);
-                self.emit_op(StructOpCode::Constant(index), line);
+                let index = self.add_constant(value)?;
+                self.emit_op(StructOpCode::Constant(index), span);
             }
             Literal::Boolean(b) => {
                 let opcode = match *b {
                     true => StructOpCode::True,
                     false => StructOpCode::False,
                 };
-                self.emit_op(opcode, line);
+                self.emit_op(opcode, span);
             }
             Literal::Nil => {
-                self.emit_op(StructOpCode::Nil, line);
+                self.emit_op(StructOpCode::Nil, span);
             }
             Literal::Str(s) => {
                 let value = ChunkConstant::String(self.string_table.get_string_intern(s));
-                let index = self.add_constant(value);
-                self.emit_op(StructOpCode::Constant(index), line);
+                let index = self.add_constant(value)?;
+                self.emit_op(StructOpCode::Constant(index), span);
             }
         }
+
+        Ok(())
     }
 
-    fn compile_infix(&mut self, op: InfixOperator, lhs: &Expr, rhs: &Expr) -> CompilerResult<()> {
-        let line = lhs.span.end_pos.line_no;
-
+    fn compile_infix(
+        &mut self,
+        op: InfixOperator,
+        lhs: &Expr,
+        rhs: &Expr,
+        span: Span,
+    ) -> CompilerResult<()> {
         self.compile_expression(lhs)?;
         self.compile_expression(rhs)?;
 
-        let _chunk = self.chunk();
         match op {
-            InfixOperator::Add => self.emit_op(StructOpCode::Add, line),
-            InfixOperator::Subtract => self.emit_op(StructOpCode::Subtract, line),
-            InfixOperator::Multiply => self.emit_op(StructOpCode::Multiply, line),
-            InfixOperator::Divide => self.emit_op(StructOpCode::Divide, line),
-            InfixOperator::EqualTo => self.emit_op(StructOpCode::Equal, line),
+            InfixOperator::Add => self.emit_op(StructOpCode::Add, span),
+            InfixOperator::Subtract => self.emit_op(StructOpCode::Subtract, span),
+            InfixOperator::Multiply => self.emit_op(StructOpCode::Multiply, span),
+            InfixOperator::Divide => self.emit_op(StructOpCode::Divide, span),
+            InfixOperator::EqualTo => self.emit_op(StructOpCode::Equal, span),
             InfixOperator::NotEqualTo => {
-                self.emit_op(StructOpCode::Equal, line);
-                self.emit_op(StructOpCode::Not, line)
+                self.emit_op(StructOpCode::Equal, span);
+                self.emit_op(StructOpCode::Not, span)
             }
-            InfixOperator::GreaterThan => self.emit_op(StructOpCode::GreaterThan, line),
+            InfixOperator::GreaterThan => self.emit_op(StructOpCode::GreaterThan, span),
             InfixOperator::GreaterEq => {
-                self.emit_op(StructOpCode::LessThan, line);
-                self.emit_op(StructOpCode::Not, line)
+                self.emit_op(StructOpCode::LessThan, span);
+                self.emit_op(StructOpCode::Not, span)
             }
-            InfixOperator::LessThan => self.emit_op(StructOpCode::LessThan, line),
+            InfixOperator::LessThan => self.emit_op(StructOpCode::LessThan, span),
             InfixOperator::LessEq => {
-                self.emit_op(StructOpCode::GreaterThan, line);
-                self.emit_op(StructOpCode::Not, line)
+                self.emit_op(StructOpCode::GreaterThan, span);
+                self.emit_op(StructOpCode::Not, span)
             }
         };
 
         Ok(())
     }
 
-    fn compile_prefix(&mut self, op: PrefixOperator, expr: &Expr) -> CompilerResult<()> {
-        let line = expr.span.start_pos.line_no;
-
+    fn compile_prefix(
+        &mut self,
+        op: PrefixOperator,
+        expr: &Expr,
+        span: Span,
+    ) -> CompilerResult<()> {
         self.compile_expression(expr)?;
 
         let opcode = match op {
@@ -412,35 +443,29 @@ impl<'s> Compiler<'s> {
             PrefixOperator::LogicalNot => StructOpCode::Not,
         };
 
-        self.emit_op(opcode, line);
+        self.emit_op(opcode, span);
 
         Ok(())
     }
 
-    fn compile_and(&mut self, lhs: &Expr, rhs: &Expr) -> CompilerResult<()> {
-        let lhs_line = lhs.span.start_pos.line_no;
-        let rhs_line = rhs.span.start_pos.line_no;
-
+    fn compile_and(&mut self, lhs: &Expr, rhs: &Expr, span: Span) -> CompilerResult<()> {
         self.compile_expression(lhs)?;
-        let jump_short_circuit = self.emit_jump(StructOpCode::JumpIfFalse(0), lhs_line);
-        self.emit_op(StructOpCode::Pop, rhs_line);
+        let jump_short_circuit = self.emit_jump(StructOpCode::JumpIfFalse(0), span);
+        self.emit_op(StructOpCode::Pop, span);
         self.compile_expression(rhs)?;
-        self.patch_jump(jump_short_circuit);
+        self.patch_jump(jump_short_circuit)?;
 
         Ok(())
     }
 
-    fn compile_or(&mut self, lhs: &Expr, rhs: &Expr) -> CompilerResult<()> {
-        let lhs_line = lhs.span.start_pos.line_no;
-        let rhs_line = rhs.span.start_pos.line_no;
-
+    fn compile_or(&mut self, lhs: &Expr, rhs: &Expr, span: Span) -> CompilerResult<()> {
         self.compile_expression(lhs)?;
-        let jump_lhs_false = self.emit_jump(StructOpCode::JumpIfFalse(0), lhs_line);
-        let jump_rhs_true = self.emit_jump(StructOpCode::Jump(0), lhs_line);
-        self.patch_jump(jump_lhs_false);
-        self.emit_op(StructOpCode::Pop, rhs_line);
+        let jump_lhs_false = self.emit_jump(StructOpCode::JumpIfFalse(0), span);
+        let jump_rhs_true = self.emit_jump(StructOpCode::Jump(0), span);
+        self.patch_jump(jump_lhs_false)?;
+        self.emit_op(StructOpCode::Pop, span);
         self.compile_expression(rhs)?;
-        self.patch_jump(jump_rhs_true);
+        self.patch_jump(jump_rhs_true)?;
 
         Ok(())
     }
@@ -450,39 +475,87 @@ impl<'s> Compiler<'s> {
         condition: &Expr,
         if_body: &Stmt,
         else_body: Option<&Stmt>,
+        whole_span: Span,
     ) -> CompilerResult<()> {
-        let line = condition.span.start_pos.line_no;
-
         self.compile_expression(condition)?;
 
         // If condition is true, pop condition from stack, run if body,
         // and then jump past else body. Else, jump past if body, pop
         // condition from stack and run else body.
-        let jump_to_else_location = self.emit_jump(StructOpCode::JumpIfFalse(0), line);
-        self.emit_op(StructOpCode::Pop, line);
+        let jump_to_else_location = self.emit_jump(StructOpCode::JumpIfFalse(0), whole_span);
+        self.emit_op(StructOpCode::Pop, whole_span);
         self.compile_statement(if_body)?;
-        let jump_over_else_location = self.emit_jump(StructOpCode::Jump(0), line);
-        self.emit_op(StructOpCode::Pop, line);
-        self.patch_jump(jump_to_else_location);
+
+        let jump_over_else_location = self.emit_jump(StructOpCode::Jump(0), whole_span);
+        self.patch_jump(jump_to_else_location)?;
+        self.emit_op(StructOpCode::Pop, whole_span);
+
         if let Some(else_body) = else_body {
             self.compile_statement(else_body)?;
         }
-        self.patch_jump(jump_over_else_location);
+        self.patch_jump(jump_over_else_location)?;
 
         Ok(())
     }
 
-    fn compile_while(&mut self, condition: &Expr, body: &Stmt) -> CompilerResult<()> {
-        let line = condition.span.start_pos.line_no;
+    fn compile_while(
+        &mut self,
+        condition: &Expr,
+        body: &Stmt,
+        whole_span: Span,
+    ) -> CompilerResult<()> {
         let loop_start = self.chunk().len();
-
         self.compile_expression(condition)?;
-        let jump_to_exit = self.emit_jump(StructOpCode::JumpIfFalse(0), line);
-        self.emit_op(StructOpCode::Pop, line);
+        let jump_to_exit = self.emit_jump(StructOpCode::JumpIfFalse(0), whole_span);
+        self.emit_op(StructOpCode::Pop, whole_span);
         self.compile_statement(body)?;
-        self.emit_loop(loop_start, line);
-        self.patch_jump(jump_to_exit);
-        self.emit_op(StructOpCode::Pop, line);
+        self.emit_loop(loop_start, whole_span)?;
+        self.patch_jump(jump_to_exit)?;
+        self.emit_op(StructOpCode::Pop, whole_span);
+        Ok(())
+    }
+
+    fn compile_for(
+        &mut self,
+        initializer: Option<&Stmt>,
+        condition: Option<&Expr>,
+        increment: Option<&Expr>,
+        body: &Stmt,
+        whole_span: Span,
+    ) -> CompilerResult<()> {
+        self.begin_scope();
+
+        if let Some(initializer) = initializer {
+            self.compile_statement(initializer)?;
+        }
+
+        let loop_start = self.chunk().len();
+        let exit_jump = match condition {
+            Some(condition) => {
+                self.compile_expression(condition)?;
+                let exit_jump = self.emit_jump(StructOpCode::JumpIfFalse(0), whole_span);
+                self.emit_op(StructOpCode::Pop, whole_span);
+                Some(exit_jump)
+            }
+            None => None,
+        };
+
+        self.begin_scope();
+        self.compile_statement(body)?;
+        self.end_scope();
+
+        if let Some(increment) = increment {
+            self.compile_expression(increment)?;
+            self.emit_op(StructOpCode::Pop, whole_span);
+        }
+
+        self.emit_loop(loop_start, whole_span)?;
+        if let Some(exit_jump) = exit_jump {
+            self.patch_jump(exit_jump)?;
+        }
+        self.emit_op(StructOpCode::Pop, whole_span);
+
+        self.end_scope();
 
         Ok(())
     }
@@ -491,39 +564,40 @@ impl<'s> Compiler<'s> {
         let num_args = u8::try_from(args.len()).expect("Too many function arguments.");
 
         match &callee.expr {
-            ExprType::Get(instance_expr, method_name) => {
+            ExprType::Get(instance_expr, method) => {
                 // Method on an instance, we use invoke.
-                let line = callee.span.end_pos.line_no;
                 self.compile_expression(instance_expr)?;
                 for arg in args.iter() {
                     self.compile_expression(arg)?;
                 }
-                let index = self.add_string_constant(method_name);
+                let index = self.add_string_constant(&method.name)?;
 
-                self.emit_op(StructOpCode::Invoke(index, num_args), line);
+                self.emit_op(StructOpCode::Invoke(index, num_args), callee.span);
             }
-            ExprType::Super(method_name) => {
+            ExprType::Super(method) => {
+                self.check_super_validity()?;
                 // Method on super of instance.
-                let line = callee.span.start_pos.line_no;
-                self.get_variable(THIS_STR, line)?;
+                let synthetic_this = self.synthetic_id(THIS_STR, callee.span);
+                let synthetic_super = self.synthetic_id(SUPER_STR, callee.span);
+
+                self.get_variable(&synthetic_this)?;
                 for arg in args.iter() {
                     self.compile_expression(arg)?;
                 }
-                self.get_variable(SUPER_STR, line)?;
+                self.get_variable(&synthetic_super)?;
 
-                let line = callee.span.end_pos.line_no;
-                let index = self.add_string_constant(method_name);
+                let index = self.add_string_constant(&method.name)?;
 
-                self.emit_op(StructOpCode::InvokeSuper(index, num_args), line);
+                self.emit_op(StructOpCode::InvokeSuper(index, num_args), callee.span);
             }
             _ => {
                 // Usual call.
-                let line = callee.span.end_pos.line_no;
+                let _line = callee.span.end_pos.line_no;
                 self.compile_expression(callee)?;
                 for arg in args.iter() {
                     self.compile_expression(arg)?;
                 }
-                self.emit_op(StructOpCode::Call(num_args), line);
+                self.emit_op(StructOpCode::Call(num_args), callee.span);
             }
         }
 
@@ -539,13 +613,13 @@ impl<'s> Compiler<'s> {
         Ok(())
     }
 
-    fn define_variable(&mut self, name: &str, line: usize) -> CompilerResult<()> {
+    fn define_variable(&mut self, id: &Identifier) -> CompilerResult<()> {
         // Global scope.
         if self.get_context().scope_depth == 0 {
             // Store the global var name as a string constant, so VM can
             // refer to it.
-            let global_var_idx = self.add_string_constant(name);
-            self.emit_op(StructOpCode::DefineGlobal(global_var_idx), line);
+            let global_var_idx = self.add_string_constant(&id.name)?;
+            self.emit_op(StructOpCode::DefineGlobal(global_var_idx), id.span);
         } else {
             self.get_context_mut().mark_last_local_initialized();
         }
@@ -553,49 +627,53 @@ impl<'s> Compiler<'s> {
         Ok(())
     }
 
-    fn get_variable(&mut self, var_name: &str, line: usize) -> CompilerResult<()> {
-        match self.resolve_variable(var_name)? {
+    fn get_variable(&mut self, id: &Identifier) -> CompilerResult<()> {
+        match self.resolve_variable(&id.name)? {
             VariableLocator::Global => {
                 // Global variable.
-                let global_var_idx = self.add_string_constant(var_name);
-                self.emit_op(StructOpCode::GetGlobal(global_var_idx), line);
+                let global_var_idx = self.add_string_constant(&id.name)?;
+                self.emit_op(StructOpCode::GetGlobal(global_var_idx), id.span);
             }
             VariableLocator::Local(index) => {
                 // Local variable.
-                self.emit_op(StructOpCode::GetLocal(index), line);
+                self.emit_op(StructOpCode::GetLocal(index), id.span);
             }
             VariableLocator::Upvalue(index) => {
-                self.emit_op(StructOpCode::GetUpvalue(index), line);
+                self.emit_op(StructOpCode::GetUpvalue(index), id.span);
             }
         }
 
         Ok(())
     }
 
-    fn set_variable(&mut self, var_name: &str, expr: &Expr, line: usize) -> CompilerResult<()> {
+    fn set_variable(&mut self, id: &Identifier, expr: &Expr) -> CompilerResult<()> {
         self.compile_expression(expr)?;
 
-        match self.resolve_variable(var_name)? {
+        match self.resolve_variable(&id.name)? {
             VariableLocator::Global => {
-                let global_var_idx = self.add_string_constant(var_name);
-                self.emit_op(StructOpCode::SetGlobal(global_var_idx), line);
+                let global_var_idx = self.add_string_constant(&id.name)?;
+                self.emit_op(StructOpCode::SetGlobal(global_var_idx), id.span);
             }
             VariableLocator::Local(index) => {
-                self.emit_op(StructOpCode::SetLocal(index), line);
+                self.emit_op(StructOpCode::SetLocal(index), id.span);
             }
             VariableLocator::Upvalue(index) => {
-                self.emit_op(StructOpCode::SetUpvalue(index), line);
+                self.emit_op(StructOpCode::SetUpvalue(index), id.span);
             }
         }
 
         Ok(())
     }
 
-    fn add_constant(&mut self, constant: ChunkConstant) -> ConstantIndex {
+    fn synthetic_id(&self, name: &str, span: Span) -> Identifier {
+        Identifier::new(name.to_owned(), span)
+    }
+
+    fn add_constant(&mut self, constant: ChunkConstant) -> CompilerResult<ConstantIndex> {
         self.chunk().add_constant(constant)
     }
 
-    fn add_string_constant(&mut self, name: &str) -> ConstantIndex {
+    fn add_string_constant(&mut self, name: &str) -> CompilerResult<ConstantIndex> {
         let constant = ChunkConstant::String(self.string_table.get_string_intern(name));
         self.chunk().add_constant(constant)
     }
@@ -632,10 +710,11 @@ impl<'s> Compiler<'s> {
                 break;
             }
             if local.captured {
-                context.chunk.write_op(StructOpCode::CloseUpvalue, 99);
+                context.chunk.write_op(StructOpCode::CloseUpvalue, 0);
             } else {
-                context.chunk.write_op(StructOpCode::Pop, 99);
+                context.chunk.write_op(StructOpCode::Pop, 0);
             }
+
             context.locals.pop();
         }
     }
@@ -669,36 +748,65 @@ impl<'s> Compiler<'s> {
         Ok(VariableLocator::Upvalue(upvalue_index))
     }
 
-    fn emit_default_return(&mut self, line: usize) {
-        if self.get_context().is_initializer {
-            self.emit_op(StructOpCode::GetLocal(0), line);
-        } else {
-            self.emit_op(StructOpCode::Nil, line);
-        }
+    fn compile_return(&mut self, expr: Option<&Expr>, whole_span: Span) -> CompilerResult<()> {
+        match self.get_context().fn_type {
+            FunctionType::Root => return Err(CompilerError::ReturnAtTopLevel),
+            FunctionType::Function | FunctionType::Method => match expr {
+                Some(expr) => self.compile_expression(expr)?,
+                None => self.emit_op(StructOpCode::Nil, whole_span),
+            },
+            FunctionType::Initializer => {
+                if expr.is_some() {
+                    return Err(CompilerError::ReturnInInitializer);
+                } else {
+                    self.emit_op(StructOpCode::GetLocal(0), whole_span);
+                }
+            }
+        };
+
+        self.emit_op(StructOpCode::Return, whole_span);
+        Ok(())
     }
 
-    fn emit_op(&mut self, op: StructOpCode, line: usize) {
-        self.chunk().write_op(op, line);
+    fn emit_op(&mut self, op: StructOpCode, span: Span) {
+        self.chunk().write_op(op, span.start_pos.line_no);
     }
 
-    fn emit_jump(&mut self, op: StructOpCode, line: usize) -> usize {
+    fn emit_jump(&mut self, op: StructOpCode, span: Span) -> usize {
         let jump_index = self.chunk().len();
-        self.emit_op(op, line);
+        self.emit_op(op, span);
         jump_index
     }
 
-    fn patch_jump(&mut self, jump_index: usize) {
+    fn patch_jump(&mut self, jump_index: usize) -> CompilerResult<()> {
         let distance = self.chunk().len() - (jump_index + 3);
 
-        let distance = u16::try_from(distance).expect("Jump distance too large.");
+        let distance = u16::try_from(distance).map_err(|_| CompilerError::JumpTooLong)?;
         self.chunk().patch_short(jump_index + 1, distance).unwrap();
+
+        Ok(())
     }
 
-    fn emit_loop(&mut self, loop_start_index: usize, line: usize) {
+    fn emit_loop(&mut self, loop_start_index: usize, span: Span) -> CompilerResult<()> {
         let distance = (self.chunk().len() + 3) - loop_start_index;
-        let distance = u16::try_from(distance).expect("Jump distance too large.");
+        let distance = u16::try_from(distance).map_err(|_| CompilerError::JumpTooLong)?;
 
-        self.emit_op(StructOpCode::Loop(distance), line);
+        self.emit_op(StructOpCode::Loop(distance), span);
+
+        Ok(())
+    }
+
+    fn check_super_validity(&self) -> CompilerResult<()> {
+        match self.class_stack.last() {
+            Some(class) => {
+                if class.contains_superclass {
+                    Ok(())
+                } else {
+                    Err(CompilerError::SuperWithoutSuperclass)
+                }
+            }
+            None => Err(CompilerError::SuperOutsideClass),
+        }
     }
 
     fn print_chunk(&self, _name: &str, _chunk: &Chunk) {

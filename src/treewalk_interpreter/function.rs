@@ -50,7 +50,7 @@ impl LoxFn {
 
         // Swap interpreter to new env
         let prev_env = interpreter.swap_env(env);
-        let result = match interpreter.eval_statement(&self.0.fn_data.body) {
+        let result = match interpreter.eval_statements(&self.0.fn_data.body) {
             Ok(_) => Ok(Object::Nil),
             Err(InterpreterError::Return(object)) => Ok(object),
             Err(e) => Err(e),

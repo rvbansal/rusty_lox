@@ -41,13 +41,19 @@ pub struct Stmt {
 pub enum StmtType {
     Expression(Expr),
     Print(Expr),
-    VariableDecl(String, Expr),
+    VariableDecl(Identifier, Expr),
     Block(Vec<Stmt>),
     IfElse(Expr, Box<Stmt>, Option<Box<Stmt>>),
     While(Expr, Box<Stmt>),
+    For(
+        Option<Box<Stmt>>,
+        Option<Box<Expr>>,
+        Option<Box<Expr>>,
+        Box<Stmt>,
+    ),
     FuncDecl(FuncInfo),
     Return(Option<Expr>),
-    ClassDecl(String, Option<String>, Vec<FuncInfo>),
+    ClassDecl(Identifier, Option<Identifier>, Vec<FuncInfo>),
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -62,20 +68,27 @@ pub enum ExprType {
     Infix(InfixOperator, Box<Expr>, Box<Expr>),
     Prefix(PrefixOperator, Box<Expr>),
     Logical(LogicalOperator, Box<Expr>, Box<Expr>),
-    Variable(String),
-    Assignment(String, Box<Expr>),
+    Variable(Identifier),
+    Assignment(Identifier, Box<Expr>),
     Call(Box<Expr>, Vec<Expr>),
-    Get(Box<Expr>, String),
-    Set(Box<Expr>, String, Box<Expr>),
+    Get(Box<Expr>, Identifier),
+    Set(Box<Expr>, Identifier, Box<Expr>),
     This,
-    Super(String),
+    Super(Identifier),
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct Identifier {
+    pub name: String,
+    pub span: Span,
 }
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct FuncInfo {
-    pub name: String,
-    pub params: Vec<String>,
-    pub body: Box<Stmt>,
+    pub ident: Identifier,
+    pub params: Vec<Identifier>,
+    pub body: Vec<Stmt>,
+    pub span: Span,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -121,9 +134,26 @@ impl InfixOperator {
     }
 }
 
+impl Identifier {
+    pub fn new(name: String, span: Span) -> Self {
+        Self { name, span }
+    }
+}
+
 impl Stmt {
     pub fn new(stmt: StmtType, span: Span) -> Self {
         Stmt { stmt, span }
+    }
+}
+
+impl FuncInfo {
+    pub fn new(ident: Identifier, params: Vec<Identifier>, body: Vec<Stmt>, span: Span) -> Self {
+        FuncInfo {
+            ident,
+            params,
+            body,
+            span,
+        }
     }
 }
 
@@ -131,19 +161,7 @@ impl Expr {
     pub fn new(expr: ExprType, span: Span) -> Self {
         Expr { expr, span }
     }
-}
 
-impl FuncInfo {
-    pub fn new(name: String, params: Vec<String>, body: Stmt) -> Self {
-        FuncInfo {
-            name,
-            params,
-            body: Box::new(body),
-        }
-    }
-}
-
-impl Expr {
     pub fn ast_string(&self) -> String {
         match &self.expr {
             ExprType::Literal(l) => match l {
@@ -165,21 +183,23 @@ impl Expr {
                 lhs.ast_string(),
                 rhs.ast_string()
             ),
-            ExprType::Variable(var) => var.clone(),
-            ExprType::Assignment(var, expr) => format!("(set {} {})", var, expr.ast_string()),
+            ExprType::Variable(var) => var.name.clone(),
+            ExprType::Assignment(var, expr) => format!("(set {} {})", var.name, expr.ast_string()),
             ExprType::Call(callee, args) => {
                 let exprs: Vec<_> = args.iter().map(|a| a.ast_string()).collect();
                 format!("(call {} {})", callee.ast_string(), exprs.join(" "))
             }
-            ExprType::Get(expr, property) => format!("(get {} {})", expr.ast_string(), property),
+            ExprType::Get(expr, property) => {
+                format!("(get {} {})", expr.ast_string(), property.name)
+            }
             ExprType::Set(expr_lhs, property, expr_rhs) => format!(
                 "(set {} {} {})",
                 expr_lhs.ast_string(),
-                property,
+                property.name,
                 expr_rhs.ast_string()
             ),
             ExprType::This => String::from("this"),
-            ExprType::Super(method) => format!("(super {})", method),
+            ExprType::Super(method) => format!("(super {})", method.name),
         }
     }
 }

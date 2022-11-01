@@ -41,7 +41,7 @@ impl NativeFn {
 
 impl fmt::Debug for NativeFn {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "<native-func {}>", self.0.name)
+        write!(f, "<native fn {}>", self.0.name)
     }
 }
 

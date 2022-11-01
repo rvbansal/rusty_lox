@@ -75,7 +75,9 @@ impl Resolver {
             frontend_grammar::StmtType::Print(expr) => {
                 StmtType::Print(self.resolve_expression(expr)?)
             }
-            frontend_grammar::StmtType::VariableDecl(name, expr) => {
+            frontend_grammar::StmtType::VariableDecl(ident, expr) => {
+                let name = &ident.name;
+
                 if self.is_var_already_defined(name) {
                     return Err(ResolverError::LocalVarDefinedAlready(name.to_owned()));
                 }
@@ -136,15 +138,17 @@ impl Resolver {
                 };
                 StmtType::Return(return_expr)
             }
-            frontend_grammar::StmtType::ClassDecl(name, superclass, methods) => {
+            frontend_grammar::StmtType::ClassDecl(ident, superclass, methods) => {
+                let name = &ident.name;
+
                 self.define_variable(name);
 
                 let resolved_superclass = match superclass {
                     Some(superclass) => {
-                        if superclass == name {
+                        if superclass.name == *name {
                             return Err(ResolverError::SuperClassIsSameAsClass);
                         }
-                        Some(self.resolve_variable(superclass))
+                        Some(self.resolve_variable(&superclass.name))
                     }
                     None => None,
                 };
@@ -165,7 +169,7 @@ impl Resolver {
 
                 let mut resolved_methods = Vec::with_capacity(methods.len());
                 for method in methods.iter() {
-                    let func_context = if method.name == INIT_STR {
+                    let func_context = if method.ident.name == INIT_STR {
                         FuncContext::Initializer
                     } else {
                         FuncContext::Method
@@ -181,6 +185,60 @@ impl Resolver {
 
                 StmtType::ClassDecl(name.clone(), resolved_superclass, resolved_methods)
             }
+            frontend_grammar::StmtType::For(init, cond, incr, body) => {
+                let wrap_in_block = |stmt: frontend_grammar::Stmt| {
+                    let span = stmt.span;
+                    frontend_grammar::Stmt {
+                        stmt: frontend_grammar::StmtType::Block(vec![stmt]),
+                        span,
+                    }
+                };
+
+                let wrap_in_block_2 =
+                    |stmt1: frontend_grammar::Stmt, stmt2: frontend_grammar::Stmt| {
+                        let span = stmt1.span.extend(stmt2.span);
+                        frontend_grammar::Stmt {
+                            stmt: frontend_grammar::StmtType::Block(vec![stmt1, stmt2]),
+                            span,
+                        }
+                    };
+
+                let expr_to_stmt = |expr: frontend_grammar::Expr| {
+                    let span = expr.span;
+                    frontend_grammar::Stmt {
+                        stmt: frontend_grammar::StmtType::Expression(expr),
+                        span,
+                    }
+                };
+
+                let default_true = || frontend_grammar::Expr {
+                    expr: frontend_grammar::ExprType::Literal(frontend_grammar::Literal::Boolean(
+                        true,
+                    )),
+                    span: Span::default(),
+                };
+
+                let mut rearranged = wrap_in_block(*body.clone());
+
+                if let Some(incr) = incr {
+                    rearranged = wrap_in_block_2(rearranged, expr_to_stmt(*incr.clone()));
+                }
+
+                let (cond, total_span) = match cond {
+                    Some(expr) => (*expr.clone(), expr.span.extend(rearranged.span)),
+                    None => (default_true(), rearranged.span),
+                };
+                rearranged = frontend_grammar::Stmt {
+                    stmt: frontend_grammar::StmtType::While(cond, Box::new(rearranged)),
+                    span: total_span,
+                };
+
+                if let Some(init) = init {
+                    rearranged = wrap_in_block_2(*init.clone(), rearranged);
+                }
+
+                self.resolve_statement(&rearranged)?.stmt
+            }
         };
 
         Ok(Stmt {
@@ -194,26 +252,36 @@ impl Resolver {
         func_info: &frontend_grammar::FuncInfo,
         context: FuncContext,
     ) -> ResolverResult<FuncInfo> {
+        let func_name = &func_info.ident.name;
+
         // Handle the case where the function is used recursively.
         // We need to define it eagerly.
-        self.define_variable(&func_info.name);
+        self.define_variable(func_name);
 
         self.push_scope();
         let prev_func_context = self.func_context;
         self.func_context = context;
 
-        for name in func_info.params.iter() {
-            self.define_variable(name);
+        for param in func_info.params.iter() {
+            self.define_variable(&param.name);
         }
 
-        let resolved_body = Box::new(self.resolve_statement(&func_info.body)?);
+        let resolved_body = func_info
+            .body
+            .iter()
+            .map(|stmt| self.resolve_statement(stmt))
+            .collect::<ResolverResult<_>>()?;
 
         self.func_context = prev_func_context;
         self.pop_scope();
 
         Ok(FuncInfo {
-            name: func_info.name.clone(),
-            params: func_info.params.clone(),
+            name: func_name.clone(),
+            params: func_info
+                .params
+                .iter()
+                .map(|ident| ident.name.clone())
+                .collect(),
             body: resolved_body,
         })
     }
@@ -236,13 +304,13 @@ impl Resolver {
                 ExprType::Logical(*op, lhs, rhs)
             }
             frontend_grammar::ExprType::Variable(var) => {
-                if self.is_during_var_initialization(var) {
-                    return Err(ResolverError::UseVarInInitialization(var.to_owned()));
+                if self.is_during_var_initialization(&var.name) {
+                    return Err(ResolverError::UseVarInInitialization(var.name.to_owned()));
                 }
-                ExprType::Variable(self.resolve_variable(var))
+                ExprType::Variable(self.resolve_variable(&var.name))
             }
             frontend_grammar::ExprType::Assignment(var, expr) => {
-                let var = self.resolve_variable(var);
+                let var = self.resolve_variable(&var.name);
                 let expr = Box::new(self.resolve_expression(expr)?);
                 ExprType::Assignment(var, expr)
             }
@@ -254,12 +322,12 @@ impl Resolver {
             }
             frontend_grammar::ExprType::Get(expr, property) => {
                 let expr = Box::new(self.resolve_expression(expr)?);
-                ExprType::Get(expr, property.clone())
+                ExprType::Get(expr, property.name.clone())
             }
             frontend_grammar::ExprType::Set(expr, property, value) => {
                 let expr = Box::new(self.resolve_expression(expr)?);
                 let value = Box::new(self.resolve_expression(value)?);
-                ExprType::Set(expr, property.clone(), value)
+                ExprType::Set(expr, property.name.clone(), value)
             }
             frontend_grammar::ExprType::This => {
                 if self.class_context == ClassContext::Global {
@@ -271,7 +339,7 @@ impl Resolver {
                 if self.class_context != ClassContext::Subclass {
                     return Err(ResolverError::SuperStatementOutsideClass);
                 }
-                ExprType::Super(self.resolve_variable(SUPER_STR), method_name.clone())
+                ExprType::Super(self.resolve_variable(SUPER_STR), method_name.name.clone())
             }
         };
 

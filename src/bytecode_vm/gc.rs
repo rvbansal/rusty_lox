@@ -1,259 +1,186 @@
-use std::cell::{Cell, Ref, RefCell, RefMut};
-use std::fmt;
-use std::rc::Rc;
+use std::cell::Cell;
 
-// Owns heap-allocated object and gc metadata.
-pub struct GcBox<T> {
-    object: RefCell<Option<T>>,
+#[derive(Debug)]
+pub struct Gc<T> {
+    index: usize,
+    _marker: std::marker::PhantomData<*const T>,
+}
+
+#[derive(Debug)]
+pub struct SubHeap<T> {
+    objects: Vec<Option<HeapEntry<T>>>,
+    free_list: Vec<usize>,
+}
+
+#[derive(Debug)]
+struct HeapEntry<T> {
+    content: T,
     marked: Cell<bool>,
 }
 
-// Refers to an object in the heap. B/c this a Rc to a Refcell, a GcPtr does
-// not dictate whether something gets garbage collected or not.
-// The user has to ensure that the object reachable through GcPtr is marked.
-pub struct GcPtr<T> {
-    ptr: Rc<GcBox<T>>,
-}
-
-// Defines what objects get deleted in sweep step of gc.
-pub struct GcHeap<T: Traceable> {
-    objects: Vec<GcPtr<T>>,
-}
-
-pub trait Traceable {
-    fn trace(&self);
-}
-
-impl<T: Traceable> GcPtr<T> {
-    pub fn try_borrow(&self) -> Ref<Option<T>> {
-        self.ptr.object.borrow()
-    }
-
-    pub fn borrow(&self) -> Ref<T> {
-        Ref::map(self.try_borrow(), |obj| {
-            obj.as_ref().expect("Object was garbage collected.")
-        })
-    }
-
-    pub fn try_borrow_mut(&mut self) -> RefMut<Option<T>> {
-        self.ptr.object.borrow_mut()
-    }
-
-    pub fn borrow_mut(&mut self) -> RefMut<T> {
-        RefMut::map(self.try_borrow_mut(), |obj| {
-            obj.as_mut().expect("Object was garbage collected.")
-        })
-    }
-
-    pub fn mark(&self) {
-        if !self.ptr.marked.get() {
-            self.ptr.marked.set(true);
-            self.borrow().trace();
+impl<T> Gc<T> {
+    fn new(index: usize) -> Self {
+        Self {
+            index,
+            _marker: Default::default(),
         }
     }
-
-    fn unmark(&self) {
-        self.ptr.marked.set(false);
-    }
-
-    fn marked(&self) -> bool {
-        self.ptr.marked.get()
-    }
-
-    fn discard(&mut self) {
-        self.try_borrow_mut().take();
-    }
 }
 
-impl<T> fmt::Debug for GcPtr<T> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{:?}", Rc::as_ptr(&self.ptr))
-    }
-}
-
-impl<T> Clone for GcPtr<T> {
+impl<T> Copy for Gc<T> {}
+impl<T> Clone for Gc<T> {
     fn clone(&self) -> Self {
-        GcPtr {
-            ptr: self.ptr.clone(),
+        *self
+    }
+}
+
+impl<T> PartialEq for Gc<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.index == other.index
+    }
+}
+
+impl<T> SubHeap<T> {
+    pub fn new() -> Self {
+        Self {
+            objects: vec![],
+            free_list: vec![],
         }
     }
-}
 
-impl<T> PartialEq<GcPtr<T>> for GcPtr<T> {
-    fn eq(&self, other: &Self) -> bool {
-        Rc::ptr_eq(&self.ptr, &other.ptr)
+    pub fn manage(&mut self, value: T) -> Gc<T> {
+        let entry = Some(HeapEntry::new(value));
+        match self.free_list.pop() {
+            Some(index) => {
+                self.objects[index] = entry;
+                Gc::new(index)
+            }
+            None => {
+                let index = self.objects.len();
+                self.objects.push(entry);
+                Gc::new(index)
+            }
+        }
     }
-}
 
-impl<T> Eq for GcPtr<T> {}
-
-impl<T: Traceable> GcHeap<T> {
-    pub fn new() -> Self {
-        GcHeap { objects: vec![] }
+    fn get_entry(&self, ptr: Gc<T>) -> &HeapEntry<T> {
+        let length = self.objects.len();
+        match self.objects.get(ptr.index) {
+            None => panic!(
+                "gc pointed outside vector bounds: {} > {}",
+                ptr.index, length
+            ),
+            Some(None) => panic!("gc pointed to freed object: {}", ptr.index),
+            Some(Some(x)) => x,
+        }
     }
 
-    pub fn insert(&mut self, obj: T) -> GcPtr<T> {
-        let gc_obj_box = GcBox {
-            object: RefCell::new(Some(obj)),
-            marked: Cell::new(false),
-        };
+    fn get_entry_mut(&mut self, ptr: Gc<T>) -> &mut HeapEntry<T> {
+        let length = self.objects.len();
+        match self.objects.get_mut(ptr.index) {
+            Some(Some(x)) => x,
+            Some(None) => panic!("gc pointed to freed object: {}", ptr.index),
+            None => panic!(
+                "gc pointed outside vector bounds: {} > {}",
+                ptr.index, length
+            ),
+        }
+    }
 
-        let gc_obj_ptr = GcPtr {
-            ptr: Rc::new(gc_obj_box),
-        };
+    pub fn get(&self, ptr: Gc<T>) -> &T {
+        &self.get_entry(ptr).content
+    }
 
-        // Make an internal copy of pointer before returning a ptr to caller
-        self.objects.push(gc_obj_ptr.clone());
-        gc_obj_ptr
+    pub fn get_mut(&mut self, ptr: Gc<T>) -> &mut T {
+        &mut self.get_entry_mut(ptr).content
+    }
+
+    pub fn mark_and_trace<'a, F>(&'a self, ptr: Gc<T>, trace: F)
+    where
+        F: Fn(&'a T),
+    {
+        let entry = self.get_entry(ptr);
+        if !entry.mark() {
+            trace(&entry.content)
+        }
     }
 
     pub fn sweep(&mut self) {
-        for ptr in self.objects.iter_mut() {
-            if !ptr.marked() {
-                ptr.discard();
-            }
-        }
-
-        // Remove deleted objects.
-        self.objects.retain(|ptr| ptr.marked());
-
-        // Unmark retained objects.
-        for ptr in self.objects.iter() {
-            ptr.unmark();
-        }
-    }
-}
-
-impl<T: Traceable> Drop for GcHeap<T> {
-    // Kill everything in heap when GcHeap goes out of scope.
-    fn drop(&mut self) {
-        for ptr in self.objects.iter_mut() {
-            ptr.discard();
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    impl Traceable for String {
-        fn trace(&self) {}
-    }
-
-    struct RecurStruct {
-        next: Option<GcPtr<RecurStruct>>,
-    }
-
-    impl RecurStruct {
-        fn new() -> Self {
-            RecurStruct { next: None }
-        }
-
-        fn new_with_next_struct(ns: GcPtr<RecurStruct>) -> Self {
-            RecurStruct { next: Some(ns) }
-        }
-    }
-
-    impl Traceable for RecurStruct {
-        fn trace(&self) {
-            if let Some(next) = &self.next {
-                next.mark();
+        for (index, slot) in self.objects.iter_mut().enumerate() {
+            if let Some(entry) = slot {
+                if entry.is_marked() {
+                    entry.unmark();
+                } else {
+                    *slot = None;
+                    self.free_list.push(index);
+                }
             }
         }
     }
 
-    #[test]
-    fn test_gc_string() {
-        let mut heap = GcHeap::<String>::new();
+    pub fn size(&self) -> usize {
+        self.objects.len() * std::mem::size_of::<T>()
+    }
+}
 
-        let str1 = heap.insert("1".to_owned());
-        let str2 = heap.insert("2".to_owned());
+impl<T> HeapEntry<T> {
+    fn new(content: T) -> Self {
+        Self {
+            content,
+            marked: Cell::new(false),
+        }
+    }
+}
 
-        assert_eq!("1", *str1.borrow());
-        assert_eq!("2", *str2.borrow());
-
-        str1.mark();
-        str2.mark();
-        heap.sweep();
-
-        assert_eq!("1", *str1.borrow());
-        assert_eq!("2", *str2.borrow());
-
-        str1.mark();
-        heap.sweep();
-
-        assert_eq!("1", *str1.borrow());
-        assert_eq!(None, *str2.try_borrow());
-
-        heap.sweep();
-
-        assert_eq!(None, *str1.try_borrow());
-        assert_eq!(None, *str2.try_borrow());
+impl<T> HeapEntry<T> {
+    pub fn mark(&self) -> bool {
+        self.marked.replace(true)
     }
 
-    #[test]
-    fn test_gc_recur() {
-        let mut heap = GcHeap::<RecurStruct>::new();
-
-        let recur1 = heap.insert(RecurStruct::new());
-        let recur2 = heap.insert(RecurStruct::new_with_next_struct(recur1.clone()));
-
-        assert!(recur1.try_borrow().is_some());
-        assert!(recur2.try_borrow().is_some());
-
-        recur1.mark();
-        recur2.mark();
-        heap.sweep();
-
-        assert!(recur1.try_borrow().is_some());
-        assert!(recur2.try_borrow().is_some());
-
-        recur2.mark();
-        heap.sweep();
-
-        assert!(recur1.try_borrow().is_some());
-        assert!(recur2.try_borrow().is_some());
-
-        heap.sweep();
-
-        assert!(recur1.try_borrow().is_none());
-        assert!(recur2.try_borrow().is_none());
+    pub fn unmark(&self) {
+        self.marked.set(false);
     }
 
-    #[test]
-    fn test_ref_cycle() {
-        let mut heap = GcHeap::<RecurStruct>::new();
+    pub fn is_marked(&self) -> bool {
+        self.marked.get()
+    }
+}
 
-        let mut recur1 = heap.insert(RecurStruct::new());
-        let recur2 = heap.insert(RecurStruct::new_with_next_struct(recur1.clone()));
-        let recur3 = heap.insert(RecurStruct::new_with_next_struct(recur2.clone()));
-        recur1.borrow_mut().next = Some(recur3.clone());
+pub trait Heap {
+    fn sweep(&mut self);
+}
 
-        assert!(recur1.try_borrow().is_some());
-        assert!(recur2.try_borrow().is_some());
-        assert!(recur3.try_borrow().is_some());
+pub trait HasSubHeap<T>: Heap {
+    fn get_subheap(&self) -> &SubHeap<T>;
+    fn get_subheap_mut(&mut self) -> &mut SubHeap<T>;
+    fn trace(&self, content: &T);
+}
 
-        recur1.mark();
-        recur2.mark();
-        recur3.mark();
-        heap.sweep();
+pub trait Manages<T> {
+    fn manage(&mut self, content: T) -> Gc<T>;
+    fn get(&self, ptr: Gc<T>) -> &T;
+    fn get_mut(&mut self, ptr: Gc<T>) -> &mut T;
+    fn mark(&self, ptr: Gc<T>);
+}
 
-        assert!(recur1.try_borrow().is_some());
-        assert!(recur2.try_borrow().is_some());
-        assert!(recur3.try_borrow().is_some());
+impl<H, T> Manages<T> for H
+where
+    H: HasSubHeap<T>,
+{
+    fn manage(&mut self, content: T) -> Gc<T> {
+        self.get_subheap_mut().manage(content)
+    }
 
-        recur1.mark();
-        heap.sweep();
+    fn get(&self, ptr: Gc<T>) -> &T {
+        self.get_subheap().get(ptr)
+    }
 
-        assert!(recur1.try_borrow().is_some());
-        assert!(recur2.try_borrow().is_some());
-        assert!(recur3.try_borrow().is_some());
+    fn get_mut(&mut self, ptr: Gc<T>) -> &mut T {
+        self.get_subheap_mut().get_mut(ptr)
+    }
 
-        heap.sweep();
-
-        assert!(recur1.try_borrow().is_none());
-        assert!(recur2.try_borrow().is_none());
-        assert!(recur3.try_borrow().is_none());
+    fn mark(&self, ptr: Gc<T>) {
+        self.get_subheap()
+            .mark_and_trace(ptr, |content| self.trace(content))
     }
 }

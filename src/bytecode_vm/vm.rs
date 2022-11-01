@@ -1,27 +1,26 @@
 use super::chunk::{Chunk, ChunkConstant};
-use super::compiler::INIT_STR;
 use super::errors::{VmError, VmResult};
-use super::gc::{GcHeap, GcPtr};
+use super::gc::{Gc, HasSubHeap, Heap, Manages, SubHeap};
 use super::native_function;
 use super::native_function::NativeFn;
 use super::opcode::{ConstantIndex, StructOpCode, UpvalueLocation};
 use super::string_interner::{StringIntern, StringInterner};
 use super::value::{
-    LoxBoundMethod, LoxClass, LoxClosure, LoxInstance, PropertySearch, UpvalueData, UpvaluePtr,
-    Value,
+    LoxBoundMethod, LoxClass, LoxClosure, LoxInstance, PropertySearch, Upvalue, Value,
 };
 
 use std::collections::HashMap;
 use std::rc::Rc;
 
-const GC_CYCLES_PERIOD: u32 = 1000;
+const GC_RESET_RATIO: f64 = 2.0;
+const MAX_CALLFRAMES: usize = 64;
 
 struct CallFrame {
     ip: usize,
     base_ptr: usize,
     name: StringIntern,
     chunk: Rc<Chunk>,
-    upvalues: Rc<Vec<UpvaluePtr>>,
+    upvalues: Rc<[Gc<Upvalue>]>,
 }
 
 #[derive(Debug)]
@@ -29,20 +28,22 @@ struct Stack<T> {
     stack: Vec<T>,
 }
 
-struct Heap {
-    closure_heap: GcHeap<LoxClosure>,
-    class_heap: GcHeap<LoxClass>,
-    instance_heap: GcHeap<LoxInstance>,
-    bound_method_heap: GcHeap<LoxBoundMethod>,
+pub struct VmHeap {
+    closure_heap: SubHeap<LoxClosure>,
+    class_heap: SubHeap<LoxClass>,
+    instance_heap: SubHeap<LoxInstance>,
+    bound_method_heap: SubHeap<LoxBoundMethod>,
+    upvalue_heap: SubHeap<Upvalue>,
+    next_gc_threshold: usize,
 }
 
 pub struct VM<S> {
     call_stack: Vec<CallFrame>,
     stack: Stack<Value>,
-    open_upvalues: Vec<UpvaluePtr>,
+    open_upvalues: Vec<Gc<Upvalue>>,
     string_table: StringInterner,
     globals: HashMap<StringIntern, Value>,
-    heap: Heap,
+    heap: VmHeap,
     output_sink: S,
 }
 
@@ -55,8 +56,18 @@ impl<T> Stack<T> {
         self.stack.len()
     }
 
+    fn depth(&self, depth: usize) -> VmResult<usize> {
+        if depth < self.len() {
+            Ok(self.len() - 1 - depth)
+        } else {
+            Err(VmError::InvalidStackDepth(depth))
+        }
+    }
+
     fn get(&self, index: usize) -> VmResult<&T> {
-        self.stack.get(index).ok_or(VmError::InvalidStackIndex)
+        self.stack
+            .get(index)
+            .ok_or(VmError::InvalidStackIndex(index))
     }
 
     fn set(&mut self, index: usize, item: T) -> VmResult<()> {
@@ -65,23 +76,23 @@ impl<T> Stack<T> {
                 *slot = item;
                 Ok(())
             }
-            None => Err(VmError::InvalidStackIndex),
+            None => Err(VmError::InvalidStackIndex(index)),
         }
     }
 
     fn peek(&self, depth: usize) -> VmResult<&T> {
-        self.get(self.len() - 1 - depth)
+        let idx = self.depth(depth)?;
+        self.get(idx)
     }
 
     fn set_back(&mut self, depth: usize, item: T) -> VmResult<()> {
-        self.set(self.len() - 1 - depth, item)
+        let idx = self.depth(depth)?;
+        self.set(idx, item)
     }
 
     fn peek_n(&self, depth: usize) -> VmResult<&[T]> {
-        let start_index = self.len() - depth;
-        self.stack
-            .get(start_index..)
-            .ok_or(VmError::InvalidStackIndex)
+        let start_idx = self.depth(depth)? + 1;
+        Ok(self.stack.get(start_idx..).unwrap())
     }
 
     fn push(&mut self, item: T) {
@@ -89,17 +100,13 @@ impl<T> Stack<T> {
     }
 
     fn pop(&mut self) -> VmResult<T> {
-        self.stack.pop().ok_or(VmError::StackEmpty)
+        self.stack.pop().ok_or(VmError::StackUnderflow)
     }
 
     fn pop_n(&mut self, depth: usize) -> VmResult<()> {
-        if depth > self.len() {
-            Err(VmError::InvalidStackIndex)
-        } else {
-            let index = self.len() - depth;
-            self.truncate(index);
-            Ok(())
-        }
+        let idx = self.depth(depth)? + 1;
+        self.truncate(idx);
+        Ok(())
     }
 
     fn truncate(&mut self, index: usize) {
@@ -115,61 +122,24 @@ impl<T> Stack<T> {
     }
 }
 
-impl Heap {
+impl VmHeap {
     fn new() -> Self {
-        Heap {
-            closure_heap: GcHeap::new(),
-            class_heap: GcHeap::new(),
-            instance_heap: GcHeap::new(),
-            bound_method_heap: GcHeap::new(),
+        VmHeap {
+            closure_heap: SubHeap::new(),
+            class_heap: SubHeap::new(),
+            instance_heap: SubHeap::new(),
+            bound_method_heap: SubHeap::new(),
+            upvalue_heap: SubHeap::new(),
+            next_gc_threshold: 1024 * 1024,
         }
     }
 
-    fn insert_closure(
-        &mut self,
-        name: StringIntern,
-        arity: usize,
-        chunk: Rc<Chunk>,
-        upvalues: Rc<Vec<UpvaluePtr>>,
-    ) -> Value {
-        let closure_obj = LoxClosure {
-            name,
-            arity,
-            chunk,
-            upvalues,
-        };
-        let ptr = self.closure_heap.insert(closure_obj);
-        Value::Closure(ptr)
-    }
-
-    fn insert_class(
-        &mut self,
-        name: StringIntern,
-        methods: HashMap<StringIntern, GcPtr<LoxClosure>>,
-    ) -> Value {
-        let class_obj = LoxClass { name, methods };
-        let ptr = self.class_heap.insert(class_obj);
-        Value::Class(ptr)
-    }
-
-    fn insert_instance(
-        &mut self,
-        class: GcPtr<LoxClass>,
-        fields: HashMap<StringIntern, Value>,
-    ) -> Value {
-        let instance_obj = LoxInstance { class, fields };
-        let ptr = self.instance_heap.insert(instance_obj);
-        Value::Instance(ptr)
-    }
-
-    fn insert_bound_method(
-        &mut self,
-        receiver: GcPtr<LoxInstance>,
-        closure: GcPtr<LoxClosure>,
-    ) -> Value {
-        let bound_method_obj = LoxBoundMethod { receiver, closure };
-        let ptr = self.bound_method_heap.insert(bound_method_obj);
-        Value::BoundMethod(ptr)
+    fn size(&self) -> usize {
+        self.closure_heap.size()
+            + self.class_heap.size()
+            + self.instance_heap.size()
+            + self.bound_method_heap.size()
+            + self.upvalue_heap.size()
     }
 
     fn sweep(&mut self) {
@@ -177,6 +147,150 @@ impl Heap {
         self.class_heap.sweep();
         self.instance_heap.sweep();
         self.bound_method_heap.sweep();
+        self.next_gc_threshold = (self.size() as f64 * GC_RESET_RATIO) as usize
+    }
+
+    fn should_run_garbage_collection(&self) -> bool {
+        self.size() > self.next_gc_threshold
+    }
+
+    fn mark_value(&self, value: &Value) {
+        match value {
+            Value::Number(_) | Value::Boolean(_) | Value::Nil | Value::String(_) => {}
+            Value::Closure(ptr) => self.mark(*ptr),
+            Value::NativeFn(_) => {}
+            Value::Class(ptr) => self.mark(*ptr),
+            Value::Instance(ptr) => self.mark(*ptr),
+            Value::BoundMethod(ptr) => self.mark(*ptr),
+        }
+    }
+
+    fn read_property(&self, instance_ptr: Gc<LoxInstance>, name: &StringIntern) -> PropertySearch {
+        let instance = self.get(instance_ptr);
+
+        // Look up fields first, then methods
+        if let Some(value) = instance.fields.get(name) {
+            return PropertySearch::Field(value.clone());
+        }
+
+        if let Some(method_ptr) = self.get(instance.class).methods.get(name) {
+            return PropertySearch::Method(*method_ptr);
+        }
+
+        PropertySearch::Missing
+    }
+
+    pub fn value_string(&self, value: &Value) -> String {
+        match value {
+            Value::Number(n) => n.to_string(),
+            Value::Boolean(true) => String::from("true"),
+            Value::Boolean(false) => String::from("false"),
+            Value::Nil => String::from("nil"),
+            Value::String(s) => String::from(s.as_ref()),
+            Value::Closure(closure) => format!("<fn {}>", self.get(*closure).name),
+            Value::NativeFn(_) => String::from("<native fn>"),
+            Value::Class(class) => format!("{}", self.get(*class).name),
+            Value::Instance(instance) => {
+                let instance = self.get(*instance);
+                format!("{} instance", self.get(instance.class).name)
+            }
+            Value::BoundMethod(method) => {
+                let method = self.get(*method);
+                format!("<fn {}>", self.get(method.closure).name)
+            }
+        }
+    }
+}
+
+impl Heap for VmHeap {
+    fn sweep(&mut self) {
+        self.closure_heap.sweep();
+        self.class_heap.sweep();
+        self.instance_heap.sweep();
+        self.bound_method_heap.sweep();
+        self.upvalue_heap.sweep();
+        self.next_gc_threshold = (self.size() as f64 * GC_RESET_RATIO) as usize
+    }
+}
+
+impl HasSubHeap<LoxClosure> for VmHeap {
+    fn get_subheap(&self) -> &SubHeap<LoxClosure> {
+        &self.closure_heap
+    }
+
+    fn get_subheap_mut(&mut self) -> &mut SubHeap<LoxClosure> {
+        &mut self.closure_heap
+    }
+
+    fn trace(&self, content: &LoxClosure) {
+        for upvalue in content.upvalues.iter() {
+            self.mark(*upvalue);
+        }
+    }
+}
+
+impl HasSubHeap<LoxClass> for VmHeap {
+    fn get_subheap(&self) -> &SubHeap<LoxClass> {
+        &self.class_heap
+    }
+
+    fn get_subheap_mut(&mut self) -> &mut SubHeap<LoxClass> {
+        &mut self.class_heap
+    }
+
+    fn trace(&self, content: &LoxClass) {
+        for m in content.methods.values().copied() {
+            self.mark(m)
+        }
+    }
+}
+
+impl HasSubHeap<LoxInstance> for VmHeap {
+    fn get_subheap(&self) -> &SubHeap<LoxInstance> {
+        &self.instance_heap
+    }
+
+    fn get_subheap_mut(&mut self) -> &mut SubHeap<LoxInstance> {
+        &mut self.instance_heap
+    }
+
+    fn trace(&self, content: &LoxInstance) {
+        self.mark(content.class);
+        for value in content.fields.values() {
+            self.mark_value(value);
+        }
+    }
+}
+
+impl HasSubHeap<LoxBoundMethod> for VmHeap {
+    fn get_subheap(&self) -> &SubHeap<LoxBoundMethod> {
+        &self.bound_method_heap
+    }
+
+    fn get_subheap_mut(&mut self) -> &mut SubHeap<LoxBoundMethod> {
+        &mut self.bound_method_heap
+    }
+
+    fn trace(&self, content: &LoxBoundMethod) {
+        self.mark(content.receiver);
+        self.mark(content.closure);
+    }
+}
+
+impl HasSubHeap<Upvalue> for VmHeap {
+    fn get_subheap(&self) -> &SubHeap<Upvalue> {
+        &self.upvalue_heap
+    }
+
+    fn get_subheap_mut(&mut self) -> &mut SubHeap<Upvalue> {
+        &mut self.upvalue_heap
+    }
+
+    fn trace(&self, content: &Upvalue) {
+        match content {
+            Upvalue::Open(_) => {}
+            Upvalue::Closed(value) => self.mark_value(value),
+        }
     }
 }
 
@@ -194,7 +308,7 @@ impl<S: std::io::Write> VM<S> {
             open_upvalues: vec![],
             string_table: StringInterner::new(),
             globals: HashMap::new(),
-            heap: Heap::new(),
+            heap: VmHeap::new(),
             output_sink,
         };
 
@@ -212,10 +326,13 @@ impl<S: std::io::Write> VM<S> {
         self.stack.clear();
 
         let main_name = self.get_string_intern("<main>");
-        let main_fn = self
-            .heap
-            .insert_closure(main_name, 0, Rc::new(main_chunk), Rc::new(vec![]));
-        self.stack.push(main_fn);
+        let main_fn = self.heap.manage(LoxClosure {
+            name: main_name,
+            arity: 0,
+            chunk: Rc::new(main_chunk),
+            upvalues: Rc::from([]),
+        });
+        self.stack.push(Value::Closure(main_fn));
 
         self.call(0)?;
 
@@ -231,22 +348,14 @@ impl<S: std::io::Write> VM<S> {
     }
 
     fn run(&mut self) -> VmResult<()> {
-        let mut num_cycles = 0;
-
         loop {
-            if num_cycles == GC_CYCLES_PERIOD {
-                self.run_garbage_collection();
-                num_cycles = 0;
-            }
-            num_cycles += 1;
-
             #[cfg(feature = "trace-execution")]
             {
                 let frame = self.frame_mut();
                 let ip = frame.ip;
                 let base_ptr = frame.base_ptr;
 
-                println!("STACK     {:?}", self.stack.stack);
+                println!("STACK     {:?}", self.stack);
                 println!(
                     "ip = {}, bp = {} ({:?})",
                     ip,
@@ -255,6 +364,10 @@ impl<S: std::io::Write> VM<S> {
                 );
                 self.frame_mut().chunk.disassemble_at_offset(ip);
                 println!();
+            }
+
+            if self.heap.should_run_garbage_collection() {
+                self.run_garbage_collection();
             }
 
             // Run instruction
@@ -274,11 +387,6 @@ impl<S: std::io::Write> VM<S> {
                 StructOpCode::Subtract => self.numerical_binop(|lhs, rhs| lhs - rhs)?,
                 StructOpCode::Multiply => self.numerical_binop(|lhs, rhs| lhs * rhs)?,
                 StructOpCode::Divide => {
-                    if let Value::Number(n) = self.stack.peek(0)? {
-                        if *n == 0.0 {
-                            return Err(VmError::DivideByZero);
-                        }
-                    }
                     self.numerical_binop(|lhs, rhs| lhs / rhs)?;
                 }
                 StructOpCode::Negate => match self.stack.peek(0)? {
@@ -287,7 +395,7 @@ impl<S: std::io::Write> VM<S> {
                         self.stack.pop()?;
                         self.stack.push(Value::Number(-n));
                     }
-                    _ => return Err(VmError::WrongOperandType),
+                    _ => return Err(VmError::NonNumericOperandPrefix),
                 },
                 StructOpCode::Not => {
                     let value = self.stack.pop()?;
@@ -367,28 +475,31 @@ impl<S: std::io::Write> VM<S> {
                     let mut upvalues = Vec::with_capacity(upvalue_count);
                     for _i in 0..upvalue_count {
                         let upvalue_location = self.try_read_upvalue()?;
-                        let upvalue = match upvalue_location {
-                            UpvalueLocation::Immediate(index) => {
-                                let stack_index = self.frame().base_ptr + index as usize;
+                        let upvalue_obj = match upvalue_location {
+                            UpvalueLocation::Immediate(local_index) => {
+                                let stack_index = self.frame().base_ptr + local_index as usize;
                                 self.make_open_value(stack_index)
                             }
-                            UpvalueLocation::Recursive(index) => {
-                                self.frame().upvalues[index as usize].clone()
+                            UpvalueLocation::Recursive(upvalue_index) => {
+                                self.frame().upvalues[upvalue_index as usize]
                             }
                         };
-                        upvalues.push(upvalue);
+                        upvalues.push(upvalue_obj);
                     }
 
-                    let closure =
-                        self.heap
-                            .insert_closure(name, arity, chunk.clone(), Rc::new(upvalues));
-                    self.stack.push(closure);
+                    let closure = self.heap.manage(LoxClosure {
+                        name,
+                        arity,
+                        chunk: chunk.clone(),
+                        upvalues: Rc::from(upvalues),
+                    });
+                    self.stack.push(Value::Closure(closure));
                 }
                 StructOpCode::GetUpvalue(index) => {
                     let index = usize::from(index);
-                    let value = match &*self.frame().upvalues[index].borrow() {
-                        UpvalueData::Closed(v) => v.clone(),
-                        UpvalueData::Open(i) => self.stack.get(*i)?.clone(),
+                    let value = match self.heap.get(self.frame().upvalues[index]) {
+                        Upvalue::Closed(v) => v.clone(),
+                        Upvalue::Open(index) => self.stack.get(*index)?.clone(),
                     };
                     self.stack.push(value);
                 }
@@ -396,10 +507,9 @@ impl<S: std::io::Write> VM<S> {
                     let index = usize::from(index);
                     let value = self.stack.peek(0)?.clone();
 
-                    let mut upvalue = self.frame().upvalues[index].clone();
-                    match &mut *upvalue.borrow_mut() {
-                        UpvalueData::Closed(v) => *v = value,
-                        UpvalueData::Open(i) => self.stack.set(*i, value)?,
+                    match self.heap.get_mut(self.frame().upvalues[index]) {
+                        Upvalue::Closed(v) => *v = value,
+                        Upvalue::Open(i) => self.stack.set(*i, value)?,
                     };
                 }
                 StructOpCode::CloseUpvalue => {
@@ -408,19 +518,32 @@ impl<S: std::io::Write> VM<S> {
                 }
                 StructOpCode::MakeClass(index) => {
                     let name = self.read_string(index);
-                    let klass = self.heap.insert_class(name, HashMap::new());
-                    self.stack.push(klass);
+                    let klass = self.heap.manage(LoxClass {
+                        name,
+                        methods: HashMap::new(),
+                    });
+                    self.stack.push(Value::Class(klass));
                 }
                 StructOpCode::GetProperty(index) => {
                     let name = self.read_string(index);
-                    let instance_ptr = self.stack.peek(0)?.to_instance()?;
+                    let instance_ptr = self
+                        .stack
+                        .peek(0)?
+                        .to_instance()
+                        .ok_or(VmError::IncorrectPropertyAccess)?;
 
-                    let value = match instance_ptr.borrow().search(&name) {
+                    let value = match self.heap.read_property(instance_ptr, &name) {
                         PropertySearch::Field(value) => value,
                         PropertySearch::Method(method) => {
-                            self.heap.insert_bound_method(instance_ptr.clone(), method)
+                            let bound_method = self.heap.manage(LoxBoundMethod {
+                                receiver: instance_ptr,
+                                closure: method,
+                            });
+                            Value::BoundMethod(bound_method)
                         }
-                        PropertySearch::Missing => return Err(VmError::UnknownProperty),
+                        PropertySearch::Missing => {
+                            return Err(VmError::UnknownProperty(name.to_string()))
+                        }
                     };
 
                     self.stack.pop()?;
@@ -429,20 +552,32 @@ impl<S: std::io::Write> VM<S> {
                 StructOpCode::SetProperty(index) => {
                     let name = self.read_string(index);
                     let value = self.stack.peek(0)?.clone();
-                    let mut instance_ptr = self.stack.peek(1)?.to_instance()?;
-                    instance_ptr.borrow_mut().fields.insert(name, value.clone());
+                    let instance_ptr = self
+                        .stack
+                        .peek(1)?
+                        .to_instance()
+                        .ok_or(VmError::IncorrectFieldAccess)?;
+                    self.heap
+                        .get_mut(instance_ptr)
+                        .fields
+                        .insert(name, value.clone());
                     self.stack.pop()?;
                     self.stack.pop()?;
                     self.stack.push(value);
                 }
                 StructOpCode::MakeMethod(index) => {
                     let method_name = self.read_string(index);
-                    let method_ptr = self.stack.peek(0)?.to_closure()?;
-                    let mut class_ptr = self.stack.peek(1)?.to_class()?;
-                    class_ptr
-                        .borrow_mut()
+                    let method_ptr = self
+                        .stack
+                        .peek(0)?
+                        .to_closure()
+                        .ok_or(VmError::NotAClosure)?;
+
+                    let class_ptr = self.stack.peek(1)?.to_class().ok_or(VmError::NotAClass)?;
+                    self.heap
+                        .get_mut(class_ptr)
                         .methods
-                        .insert(method_name, method_ptr.clone());
+                        .insert(method_name, method_ptr);
 
                     self.stack.pop()?;
                 }
@@ -450,52 +585,74 @@ impl<S: std::io::Write> VM<S> {
                     let method_name = self.read_string(index);
                     let num_args = usize::from(num_args);
 
-                    let receiver_ptr = self.stack.peek(num_args)?.to_instance()?;
-                    match receiver_ptr.borrow().search(&method_name) {
+                    let receiver_ptr = self
+                        .stack
+                        .peek(num_args)?
+                        .to_instance()
+                        .ok_or(VmError::NotAnInstance)?;
+
+                    match self.heap.read_property(receiver_ptr, &method_name) {
                         PropertySearch::Field(value) => {
                             self.stack.set_back(num_args, value)?;
                             self.call(num_args)?;
                         }
                         PropertySearch::Method(method) => self.call_closure(method, num_args)?,
-                        PropertySearch::Missing => return Err(VmError::UnknownProperty),
+                        PropertySearch::Missing => {
+                            return Err(VmError::UnknownProperty(method_name.to_string()))
+                        }
                     };
                 }
                 StructOpCode::Inherit => {
-                    let superclass_ptr = self.stack.peek(1)?.to_class()?;
-                    let mut class_ptr = self.stack.peek(0)?.to_class()?;
+                    let superclass_ptr = self
+                        .stack
+                        .peek(1)?
+                        .to_class()
+                        .ok_or(VmError::IncorrectSuperclass)?;
+                    let class_ptr = self.stack.peek(0)?.to_class().ok_or(VmError::NotAClass)?;
 
-                    let methods = superclass_ptr.borrow().methods.clone();
-                    class_ptr.borrow_mut().methods = methods;
+                    let methods = self.heap.get(superclass_ptr).methods.clone();
+                    self.heap.get_mut(class_ptr).methods = methods;
                 }
                 StructOpCode::GetSuper(index) => {
                     let method_name = self.read_string(index);
-                    let class_ptr = self.stack.peek(0)?.to_class()?;
-                    let instance_ptr = self.stack.peek(1)?.to_instance()?;
+                    let class_ptr = self.stack.peek(0)?.to_class().ok_or(VmError::NotAClass)?;
+                    let instance_ptr = self
+                        .stack
+                        .peek(1)?
+                        .to_instance()
+                        .ok_or(VmError::NotAnInstance)?;
 
-                    let method_ptr = match class_ptr.borrow().methods.get(&method_name) {
-                        Some(ptr) => ptr.clone(),
-                        None => return Err(VmError::UnknownProperty),
+                    let method_ptr = match self.heap.get(class_ptr).methods.get(&method_name) {
+                        Some(ptr) => *ptr,
+                        None => return Err(VmError::UnknownProperty(method_name.to_string())),
                     };
 
-                    let value = self
-                        .heap
-                        .insert_bound_method(instance_ptr.clone(), method_ptr);
+                    let bound_method = self.heap.manage(LoxBoundMethod {
+                        receiver: instance_ptr,
+                        closure: method_ptr,
+                    });
 
                     self.stack.pop()?;
                     self.stack.pop()?;
-                    self.stack.push(value);
+                    self.stack.push(Value::BoundMethod(bound_method));
                 }
                 StructOpCode::InvokeSuper(index, num_args) => {
                     let method_name = self.read_string(index);
                     let num_args = usize::from(num_args);
-                    let superclass_ptr = self.stack.pop()?.to_class()?;
-
-                    match superclass_ptr.borrow().methods.get(&method_name) {
-                        Some(method) => self.call_closure(method.clone(), num_args)?,
-                        None => return Err(VmError::UnknownProperty),
-                    };
-
+                    let superclass_ptr =
+                        self.stack.peek(0)?.to_class().ok_or(VmError::NotAClass)?;
                     self.stack.pop()?;
+
+                    match self
+                        .heap
+                        .get(superclass_ptr)
+                        .methods
+                        .get(&method_name)
+                        .cloned()
+                    {
+                        Some(method) => self.call_closure(method, num_args)?,
+                        None => return Err(VmError::UnknownProperty(method_name.to_string())),
+                    };
                 }
                 StructOpCode::Call(num_args) => {
                     let num_args = usize::from(num_args);
@@ -512,8 +669,8 @@ impl<S: std::io::Write> VM<S> {
                 }
                 StructOpCode::Print => {
                     let value = self.stack.pop()?;
-                    writeln!(&mut self.output_sink, "{:?}", value)
-                        .expect("Unable to write output.");
+                    let output = self.heap.value_string(&value);
+                    writeln!(&mut self.output_sink, "{}", output).expect("Unable to write output.");
                 }
                 StructOpCode::Pop => {
                     self.stack.pop()?;
@@ -529,7 +686,7 @@ impl<S: std::io::Write> VM<S> {
             Value::Closure(ptr) => self.call_closure(ptr, num_args),
             Value::NativeFn(native_fn) => {
                 if native_fn.data.arity != num_args {
-                    return Err(VmError::WrongArity);
+                    return Err(VmError::WrongArity(native_fn.data.arity, num_args));
                 }
 
                 let arg_slice = self.stack.peek_n(num_args)?;
@@ -544,39 +701,41 @@ impl<S: std::io::Write> VM<S> {
                 }
             }
             Value::Class(ptr) => {
-                let instance = self.heap.insert_instance(ptr.clone(), HashMap::new());
-                self.stack.set_back(num_args, instance)?;
+                let instance = self.heap.manage(LoxInstance {
+                    class: ptr,
+                    fields: HashMap::new(),
+                });
+                self.stack.set_back(num_args, Value::Instance(instance))?;
 
-                // Call initializer
-                if let Some(init) = ptr.borrow().methods.get(INIT_STR) {
-                    self.call_closure(init.clone(), num_args)?;
+                if let Some(init) = self.heap.get(ptr).methods.get("init").cloned() {
+                    self.call_closure(init, num_args)?
                 } else if num_args > 0 {
-                    return Err(VmError::NoArgumentInitializer);
+                    return Err(VmError::WrongArity(0, num_args));
                 }
 
                 Ok(())
             }
             Value::BoundMethod(ptr) => {
-                let bound_method = ptr.borrow();
-                let receiver = Value::Instance(bound_method.receiver.clone());
+                let bound_method = self.heap.get(ptr);
+                let receiver = Value::Instance(bound_method.receiver);
+                let closure = bound_method.closure;
                 self.stack.set_back(num_args, receiver)?;
-                self.call_closure(bound_method.closure.clone(), num_args)
+                self.call_closure(closure, num_args)
             }
             _ => Err(VmError::NotACallable),
         }
     }
 
-    fn call_closure(&mut self, closure_ptr: GcPtr<LoxClosure>, num_args: usize) -> VmResult<()> {
-        let closure = closure_ptr.borrow();
+    fn call_closure(&mut self, closure_ptr: Gc<LoxClosure>, num_args: usize) -> VmResult<()> {
+        let closure = self.heap.get(closure_ptr);
         if closure.arity != num_args {
-            return Err(VmError::WrongArity);
+            return Err(VmError::WrongArity(closure.arity, num_args));
         }
-        self.push_new_frame(
-            num_args,
-            closure.name.clone(),
-            closure.chunk.clone(),
-            closure.upvalues.clone(),
-        );
+        let name = closure.name.clone();
+        let chunk = closure.chunk.clone();
+        let upvalues = closure.upvalues.clone();
+
+        self.push_new_frame(num_args, name, chunk, upvalues)?;
 
         Ok(())
     }
@@ -600,8 +759,12 @@ impl<S: std::io::Write> VM<S> {
         num_args: usize,
         name: StringIntern,
         chunk: Rc<Chunk>,
-        upvalues: Rc<Vec<UpvaluePtr>>,
-    ) {
+        upvalues: Rc<[Gc<Upvalue>]>,
+    ) -> VmResult<()> {
+        if self.call_stack.len() == MAX_CALLFRAMES {
+            return Err(VmError::StackOverflow);
+        }
+
         let new_frame = CallFrame {
             ip: 0,
             base_ptr: self.stack.len() - (num_args + 1),
@@ -610,6 +773,8 @@ impl<S: std::io::Write> VM<S> {
             upvalues,
         };
         self.call_stack.push(new_frame);
+
+        Ok(())
     }
 
     fn pop_frame(&mut self) -> VmResult<Value> {
@@ -656,44 +821,48 @@ impl<S: std::io::Write> VM<S> {
         }
     }
 
-    fn make_open_value(&mut self, stack_index: usize) -> UpvaluePtr {
+    fn make_open_value(&mut self, stack_index: usize) -> Gc<Upvalue> {
         // Sibling closures need to share an upvalue, so we first
         // check if already exists and clone it. Otherwise, create a new one.
 
-        fn index_match(upvalue: &UpvaluePtr, stack_index: usize) -> bool {
-            stack_index
-                == upvalue
-                    .get_open_index()
-                    .expect("Closed upvalue in vm open upvalues.")
+        fn index_match(upvalue: &Upvalue, stack_idx: usize) -> bool {
+            match upvalue {
+                Upvalue::Open(idx) => stack_idx == *idx,
+                Upvalue::Closed(_) => panic!("Open upvalues list contains closed upvalue!"),
+            }
         }
 
         match self
             .open_upvalues
             .iter()
-            .find(|uv| index_match(uv, stack_index))
+            .find(|uv| index_match(self.heap.get(**uv), stack_index))
         {
-            Some(upvalue) => upvalue.clone(),
+            Some(upvalue) => *upvalue,
             None => {
-                let upvalue = UpvaluePtr::new(stack_index);
-                self.open_upvalues.push(upvalue.clone());
+                let upvalue = self.heap.manage(Upvalue::Open(stack_index));
+                self.open_upvalues.push(upvalue);
                 upvalue
             }
         }
     }
 
     fn close_upvalues(&mut self, stack_index: usize) -> VmResult<()> {
-        for upvalue in self.open_upvalues.iter() {
-            let index = upvalue
-                .get_open_index()
-                .expect("Closed upvalue in vm open upvalues.");
-            if index >= stack_index {
-                let value = self.stack.get(index)?.clone();
-                upvalue.close_over_value(value);
+        for upvalue_ptr in self.open_upvalues.iter() {
+            let upvalue = self.heap.get_mut(*upvalue_ptr);
+            match upvalue {
+                Upvalue::Open(idx) => {
+                    if *idx >= stack_index {
+                        let value = self.stack.get(*idx)?.clone();
+                        *upvalue = Upvalue::Closed(value);
+                    }
+                }
+                Upvalue::Closed(_) => panic!("open_upvalues contains closed upvalue!"),
             }
         }
 
+        let heap_ref = &self.heap;
         self.open_upvalues
-            .retain(|uv| uv.get_open_index().is_some());
+            .retain(|u| matches!(heap_ref.get(*u), Upvalue::Open(_)));
 
         Ok(())
     }
@@ -709,12 +878,12 @@ impl<S: std::io::Write> VM<S> {
     fn run_garbage_collection(&mut self) {
         // Values on stack are reachable.
         for value in self.stack.iter() {
-            value.mark_internals();
+            self.heap.mark_value(value);
         }
 
         // Globals are reachable.
         for value in self.globals.values() {
-            value.mark_internals();
+            self.heap.mark_value(value);
         }
 
         // Call frames and open upvalues contain reachable objects, but only
@@ -735,7 +904,7 @@ impl<S: std::io::Write> VM<S> {
                 let string_intern = self.string_table.get_string_intern(dynamic_string);
                 Value::String(string_intern)
             }
-            _ => return Err(VmError::WrongOperandType),
+            _ => return Err(VmError::IncorrectOperandTypeAdd),
         };
 
         self.stack.pop()?;
@@ -773,7 +942,7 @@ impl<S: std::io::Write> VM<S> {
                 self.stack.push(outcome);
                 Ok(())
             }
-            (_, _) => Err(VmError::WrongOperandType),
+            (_, _) => Err(VmError::NonNumericOperandInfix),
         }
     }
 }

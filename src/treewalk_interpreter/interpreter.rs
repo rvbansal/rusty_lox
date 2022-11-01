@@ -47,7 +47,7 @@ impl<S: std::io::Write> Interpreter<S> {
         env
     }
 
-    pub fn eval_statements(&mut self, stmts: Vec<Stmt>) -> RuntimeResult<()> {
+    pub fn eval_statements(&mut self, stmts: &[Stmt]) -> RuntimeResult<()> {
         for stmt in stmts.iter() {
             self.eval_statement(stmt)?;
         }

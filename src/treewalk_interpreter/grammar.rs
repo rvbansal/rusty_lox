@@ -61,7 +61,7 @@ pub struct VariableInfo {
 pub struct FuncInfo {
     pub name: String,
     pub params: Vec<String>,
-    pub body: Box<Stmt>,
+    pub body: Vec<Stmt>,
 }
 
 #[derive(Debug, Clone)]

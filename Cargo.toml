@@ -8,6 +8,11 @@ edition = "2021"
 [dependencies]
 more-asserts = "*"
 num_enum = "*"
+clap = { version = "3.0.0", features = ["derive"]}
+
+[dev-dependencies]
+test-generator = "*"
+regex = "*"
 
 [features]
 trace-execution = []

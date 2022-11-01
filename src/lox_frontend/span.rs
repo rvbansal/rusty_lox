@@ -3,6 +3,7 @@ use std::fmt;
 /// Tracks position in source code for error messages.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 pub struct CodePosition {
+    pub byte_pos: usize,
     pub line_no: usize,
     pub column_no: usize,
 }
@@ -15,8 +16,12 @@ pub struct Span {
 }
 
 impl CodePosition {
-    pub fn new(line_no: usize, column_no: usize) -> Self {
-        CodePosition { line_no, column_no }
+    pub fn new(byte_pos: usize, line_no: usize, column_no: usize) -> Self {
+        CodePosition {
+            byte_pos,
+            line_no,
+            column_no,
+        }
     }
 }
 
@@ -32,7 +37,7 @@ impl Span {
     }
 
     pub fn default() -> Self {
-        let default_pos = CodePosition::new(0, 0);
+        let default_pos = CodePosition::new(0, 0, 0);
         Span::new(default_pos, default_pos)
     }
 
@@ -41,5 +46,9 @@ impl Span {
             start_pos: std::cmp::min(self.start_pos, other.start_pos),
             end_pos: std::cmp::max(self.end_pos, other.end_pos),
         }
+    }
+
+    pub fn extract_string<'a>(&self, source: &'a str) -> Option<&'a str> {
+        source.get(self.start_pos.byte_pos..self.end_pos.byte_pos)
     }
 }

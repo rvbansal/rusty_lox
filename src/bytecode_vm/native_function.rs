@@ -1,4 +1,5 @@
 use super::value::Value;
+use std::fmt;
 use std::rc::Rc;
 
 pub type NativeFnType = fn(&[Value]) -> Result<Value, String>;
@@ -23,6 +24,12 @@ impl NativeFn {
                 func,
             }),
         }
+    }
+}
+
+impl fmt::Debug for NativeFn {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "<native fn {}>", self.data.name)
     }
 }
 

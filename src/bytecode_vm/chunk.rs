@@ -1,3 +1,4 @@
+use super::errors::{CompilerError, CompilerResult};
 use super::opcode::{ConstantIndex, OpCodeError, StructOpCode, UpvalueLocation};
 use super::string_interner::StringIntern;
 use std::convert::TryInto;
@@ -17,6 +18,7 @@ pub enum ChunkConstant {
     },
 }
 
+#[derive(Debug)]
 pub struct Chunk {
     code: Vec<u8>,
     constants: Vec<ChunkConstant>,
@@ -46,6 +48,10 @@ impl Chunk {
         self.code.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.code.len() == 0
+    }
+
     pub fn write_op(&mut self, op: StructOpCode, line: usize) {
         let orig_len = self.len();
         StructOpCode::encode(&mut self.code, op);
@@ -56,11 +62,6 @@ impl Chunk {
         for _ in 0..delta_len {
             self.lines.push(line);
         }
-    }
-
-    pub fn write_byte(&mut self, byte: u8, line: usize) {
-        self.code.push(byte);
-        self.lines.push(line);
     }
 
     pub fn patch_byte(&mut self, offset: usize, byte: u8) -> Result<(), OpCodeError> {
@@ -84,21 +85,12 @@ impl Chunk {
         StructOpCode::decode(&self.code, offset)
     }
 
-    pub fn read_byte(&self, index: usize) -> u8 {
-        self.code[index]
-    }
-
-    pub fn read_short(&self, index: usize) -> u16 {
-        let bytes = [self.code[index], self.code[index + 1]];
-        u16::from_be_bytes(bytes)
-    }
-
-    pub fn add_constant(&mut self, constant: ChunkConstant) -> ConstantIndex {
+    pub fn add_constant(&mut self, constant: ChunkConstant) -> CompilerResult<ConstantIndex> {
         self.constants.push(constant);
         let index = self.constants.len() - 1;
         index
             .try_into()
-            .expect("Constant array not large enough to handle this constant.")
+            .map_err(|_| CompilerError::TooManyConstants)
     }
 
     pub fn read_constant(&self, index: ConstantIndex) -> ChunkConstant {

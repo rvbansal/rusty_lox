@@ -4,6 +4,7 @@ use std::str::CharIndices;
 
 #[derive(Debug, Clone)]
 pub struct Cursor<'src> {
+    source: &'src str,
     char_iterator: Peekable<CharIndices<'src>>,
     position: CodePosition,
 }
@@ -12,8 +13,9 @@ impl<'src> Cursor<'src> {
     /// Creates a character stream for the source string.
     pub fn new(source: &'src str) -> Self {
         Cursor {
+            source,
             char_iterator: source.char_indices().peekable(),
-            position: CodePosition::new(1, 1),
+            position: CodePosition::new(0, 1, 1),
         }
     }
 
@@ -41,6 +43,7 @@ impl<'src> Cursor<'src> {
             Some(t) => t,
         };
 
+        self.position.byte_pos = self.peek().map(|(idx, _)| idx).unwrap_or(self.source.len());
         if ch == '\n' {
             self.position.line_no += 1;
             self.position.column_no = 1;
