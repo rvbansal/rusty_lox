@@ -1,5 +1,6 @@
 use crate::bytecode_vm::{Compiler, VM};
-use crate::lox_frontend::grammar::Stmt;
+
+use crate::lox_frontend::grammar::Tree;
 use crate::lox_frontend::Parser;
 use crate::treewalk_interpreter::{Interpreter, Resolver};
 
@@ -30,7 +31,7 @@ fn main() {
             eprintln!("Usage: rlox [script]");
             process::exit(64);
         }
-    }
+    };
 }
 
 /// Run prompt from REPL.
@@ -51,44 +52,43 @@ fn run_prompt(mut interpreter: Box<dyn Run>) {
             print!("  ");
         }
 
-        match run(interpreter.as_mut(), &input) {
-            Ok(_) => {}
-            Err(e) => report_error(&e),
-        }
+        run(interpreter.as_mut(), input);
     }
 }
 
 /// Run .lox source code file.
 fn run_file(mut interpreter: Box<dyn Run>, filename: &str) {
     let contents = fs::read_to_string(filename).expect("Failed to read file.");
+    run(interpreter.as_mut(), contents);
+}
 
-    match run(interpreter.as_mut(), &contents) {
-        Ok(_) => {}
-        Err(e) => report_error(&e),
+fn run(interpreter: &mut dyn Run, source: String) {
+    // Run parser.
+    let parser = Parser::new(&source);
+
+    match parser.parse() {
+        Ok(tree) => match interpreter.consume(tree) {
+            Ok(_) => {}
+            Err(e) => eprintln!("{:?}", e),
+        },
+        Err(errors) => {
+            eprintln!("Parser errors:");
+            for e in errors {
+                eprintln!("{}", e)
+            }
+        }
     }
 }
 
-fn run(interpreter: &mut dyn Run, source: &str) -> RunResult {
-    // Run parser.
-    let parser = Parser::new(source);
-    let stmts: Vec<_> = parser.parse();
-    let stmts: Vec<_> = match stmts.into_iter().collect() {
-        Ok(stmts) => stmts,
-        Err(e) => return Err(format!("{:?}", e)),
-    };
-
-    interpreter.consume_statements(stmts)
-}
-
 trait Run {
-    fn consume_statements(&mut self, stmts: Vec<Stmt>) -> RunResult;
+    fn consume(&mut self, tree: Tree) -> RunResult;
 }
 
-impl Run for VM {
-    fn consume_statements(&mut self, stmts: Vec<Stmt>) -> RunResult {
+impl<S: std::io::Write> Run for VM<S> {
+    fn consume(&mut self, tree: Tree) -> RunResult {
         let mut compiler = Compiler::new(self.borrow_string_table());
 
-        let main_fn = match compiler.compile(&stmts) {
+        let main_fn = match compiler.compile(&tree.stmts) {
             Ok(main_fn) => main_fn,
             Err(e) => return Err(format!("{:?}", e)),
         };
@@ -100,23 +100,17 @@ impl Run for VM {
     }
 }
 
-impl Run for Interpreter {
-    fn consume_statements(&mut self, mut stmts: Vec<Stmt>) -> RunResult {
-        let mut resolver = Resolver::new();
-        for stmt in stmts.iter_mut() {
-            match resolver.resolve_root(stmt) {
-                Ok(_) => (),
-                Err(e) => return Err(format!("{:?}", e)),
-            }
-        }
+impl<S: std::io::Write> Run for Interpreter<S> {
+    fn consume(&mut self, tree: Tree) -> RunResult {
+        let resolver = Resolver::new();
+        let tree = match resolver.resolve(tree) {
+            Ok(t) => t,
+            Err(e) => return Err(format!("{:?}", e)),
+        };
 
-        match self.eval_statements(stmts) {
+        match self.eval_statements(tree.stmts) {
             Ok(_) => Ok(()),
             Err(e) => Err(format!("{:?}", e)),
         }
     }
-}
-
-fn report_error(error_message: &str) {
-    eprintln!("An error: {}", error_message);
 }

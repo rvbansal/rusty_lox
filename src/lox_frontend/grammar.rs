@@ -26,6 +26,11 @@ pub enum InfixOperator {
     LessEq,
 }
 
+#[derive(Debug)]
+pub struct Tree {
+    pub stmts: Vec<Stmt>,
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub struct Stmt {
     pub stmt: StmtType,
@@ -42,7 +47,7 @@ pub enum StmtType {
     While(Expr, Box<Stmt>),
     FuncDecl(FuncInfo),
     Return(Option<Expr>),
-    ClassDecl(String, Option<VariableInfo>, Vec<FuncInfo>),
+    ClassDecl(String, Option<String>, Vec<FuncInfo>),
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -57,19 +62,13 @@ pub enum ExprType {
     Infix(InfixOperator, Box<Expr>, Box<Expr>),
     Prefix(PrefixOperator, Box<Expr>),
     Logical(LogicalOperator, Box<Expr>, Box<Expr>),
-    Variable(VariableInfo),
-    Assignment(VariableInfo, Box<Expr>),
+    Variable(String),
+    Assignment(String, Box<Expr>),
     Call(Box<Expr>, Vec<Expr>),
     Get(Box<Expr>, String),
     Set(Box<Expr>, String, Box<Expr>),
-    This(VariableInfo),
-    Super(VariableInfo, String),
-}
-
-#[derive(Debug, PartialEq, Eq, Clone)]
-pub struct VariableInfo {
-    pub name: String,
-    pub env_hops: Option<usize>,
+    This,
+    Super(String),
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -134,15 +133,6 @@ impl Expr {
     }
 }
 
-impl VariableInfo {
-    pub fn new(name: String) -> Self {
-        VariableInfo {
-            name,
-            env_hops: None,
-        }
-    }
-}
-
 impl FuncInfo {
     pub fn new(name: String, params: Vec<String>, body: Stmt) -> Self {
         FuncInfo {
@@ -175,8 +165,8 @@ impl Expr {
                 lhs.ast_string(),
                 rhs.ast_string()
             ),
-            ExprType::Variable(var) => var.name.clone(),
-            ExprType::Assignment(var, expr) => format!("(set {} {})", var.name, expr.ast_string()),
+            ExprType::Variable(var) => var.clone(),
+            ExprType::Assignment(var, expr) => format!("(set {} {})", var, expr.ast_string()),
             ExprType::Call(callee, args) => {
                 let exprs: Vec<_> = args.iter().map(|a| a.ast_string()).collect();
                 format!("(call {} {})", callee.ast_string(), exprs.join(" "))
@@ -188,8 +178,8 @@ impl Expr {
                 property,
                 expr_rhs.ast_string()
             ),
-            ExprType::This(_) => String::from("this"),
-            ExprType::Super(_, method) => format!("(super {})", method),
+            ExprType::This => String::from("this"),
+            ExprType::Super(method) => format!("(super {})", method),
         }
     }
 }

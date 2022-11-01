@@ -1,9 +1,9 @@
 use super::environment::Environment;
 use super::errors::{InterpreterError, RuntimeResult};
+use super::grammar::FuncInfo;
 use super::interpreter::Interpreter;
 use super::object::Object;
 use crate::lox_frontend::constants::THIS_STR;
-use crate::lox_frontend::grammar::FuncInfo;
 
 use std::fmt;
 use std::rc::Rc;
@@ -31,10 +31,10 @@ impl LoxFn {
         self.0.fn_data.params.len()
     }
 
-    pub fn execute(
+    pub fn execute<S: std::io::Write>(
         &self,
         args: Vec<Object>,
-        interpreter: &mut Interpreter,
+        interpreter: &mut Interpreter<S>,
     ) -> RuntimeResult<Object> {
         if self.arity() != args.len() {
             return Err(InterpreterError::WrongArity(self.arity(), args.len()));
@@ -58,15 +58,7 @@ impl LoxFn {
 
         // Swap back to closure env
         interpreter.swap_env(prev_env);
-
-        let result = result?;
-        if self.0.is_initializer {
-            let this = self.0.closure.get(THIS_STR);
-            let this = this.expect("`this` unavailable in closure");
-            Ok(this)
-        } else {
-            Ok(result)
-        }
+        result
     }
 
     pub fn bind(&self, instance: Object) -> Self {

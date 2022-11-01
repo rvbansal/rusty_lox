@@ -36,13 +36,14 @@ struct Heap {
     bound_method_heap: GcHeap<LoxBoundMethod>,
 }
 
-pub struct VM {
+pub struct VM<S> {
     call_stack: Vec<CallFrame>,
     stack: Stack<Value>,
     open_upvalues: Vec<UpvaluePtr>,
     string_table: StringInterner,
     globals: HashMap<StringIntern, Value>,
     heap: Heap,
+    output_sink: S,
 }
 
 impl<T> Stack<T> {
@@ -179,8 +180,14 @@ impl Heap {
     }
 }
 
-impl VM {
+impl VM<std::io::Stdout> {
     pub fn new() -> Self {
+        VM::new_with_output(std::io::stdout())
+    }
+}
+
+impl<S: std::io::Write> VM<S> {
+    pub fn new_with_output(output_sink: S) -> Self {
         let mut vm = VM {
             call_stack: vec![],
             stack: Stack::new(),
@@ -188,6 +195,7 @@ impl VM {
             string_table: StringInterner::new(),
             globals: HashMap::new(),
             heap: Heap::new(),
+            output_sink,
         };
 
         for (name, arity, func) in native_function::get_native_fns().iter().copied() {
@@ -504,7 +512,8 @@ impl VM {
                 }
                 StructOpCode::Print => {
                     let value = self.stack.pop()?;
-                    println!("[out] {:?}", value);
+                    writeln!(&mut self.output_sink, "{:?}", value)
+                        .expect("Unable to write output.");
                 }
                 StructOpCode::Pop => {
                     self.stack.pop()?;

@@ -2,23 +2,30 @@ use super::class::LoxClassDataPtr;
 use super::environment::Environment;
 use super::errors::{InterpreterError, RuntimeResult};
 use super::function::LoxFn;
+use super::grammar::{
+    Expr, ExprType, FuncInfo, InfixOperator, Literal, LogicalOperator, PrefixOperator, Stmt,
+    StmtType, VHops, VariableInfo,
+};
 use super::native_function::get_native_funcs;
 use super::object::Object;
 use crate::lox_frontend::constants::{INIT_STR, SUPER_STR, THIS_STR};
-use crate::lox_frontend::grammar::{
-    Expr, ExprType, FuncInfo, Literal, Stmt, StmtType, VariableInfo,
-};
-use crate::lox_frontend::grammar::{InfixOperator, LogicalOperator, PrefixOperator};
 
 use std::collections::HashMap;
 
-pub struct Interpreter {
+pub struct Interpreter<S> {
     pub env: Environment,
     pub globals: Environment,
+    pub output_sink: S,
 }
 
-impl Interpreter {
+impl Interpreter<std::io::Stdout> {
     pub fn new() -> Self {
+        Interpreter::new_with_output(std::io::stdout())
+    }
+}
+
+impl<S: std::io::Write> Interpreter<S> {
+    pub fn new_with_output(output_sink: S) -> Self {
         let env = Environment::new();
         for native_func in get_native_funcs().into_iter() {
             let name = native_func.name().to_owned();
@@ -27,7 +34,11 @@ impl Interpreter {
         }
         let globals = env.clone();
 
-        Interpreter { env, globals }
+        Interpreter {
+            env,
+            globals,
+            output_sink,
+        }
     }
 
     pub fn swap_env(&mut self, mut env: Environment) -> Environment {
@@ -49,7 +60,8 @@ impl Interpreter {
                 self.eval_expression(expr)?;
             }
             StmtType::Print(expr) => {
-                println!("[out] {:?}", self.eval_expression(expr)?);
+                let value = self.eval_expression(expr)?;
+                writeln!(&mut self.output_sink, "{:?}", value).expect("Unable to write to output.");
             }
             StmtType::IfElse(if_condition, if_body, else_body) => {
                 self.eval_if_else(if_condition, if_body, else_body.as_deref())?
@@ -67,10 +79,7 @@ impl Interpreter {
                 );
             }
             StmtType::Return(expr) => {
-                let value = match expr {
-                    Some(expr) => self.eval_expression(expr)?,
-                    None => Object::Nil,
-                };
+                let value = self.eval_expression(expr)?;
                 return Err(InterpreterError::Return(value));
             }
             StmtType::ClassDecl(name, superclass_name, methods_info) => {
@@ -161,8 +170,10 @@ impl Interpreter {
             ExprType::Assignment(var_info, expr) => {
                 let value = self.eval_expression(expr)?;
                 match var_info.env_hops {
-                    Some(env_hops) => self.env.set_at(env_hops, &var_info.name, value.clone())?,
-                    None => self.globals.set(&var_info.name, value.clone())?,
+                    VHops::Local(env_hops) => {
+                        self.env.set_at(env_hops, &var_info.name, value.clone())?
+                    }
+                    VHops::Global => self.globals.set(&var_info.name, value.clone())?,
                 }
                 Ok(value)
             }
@@ -179,7 +190,10 @@ impl Interpreter {
                 };
 
                 let err_msg = "Cannot find super environment";
-                let this_depth = var.env_hops.expect(err_msg).checked_sub(1).expect(err_msg);
+                let this_depth = match var.env_hops {
+                    VHops::Local(env_hops) => env_hops - 1,
+                    VHops::Global => panic!("{}", err_msg),
+                };
                 let this = self.env.get_at(this_depth, THIS_STR).expect(err_msg);
                 match superclass.find_method(method) {
                     Some(method) => Ok(Object::LoxFunc(method.bind(this))),
@@ -200,8 +214,8 @@ impl Interpreter {
 
     fn env_var_lookup(&self, var_info: &VariableInfo) -> RuntimeResult<Object> {
         match var_info.env_hops {
-            Some(env_hops) => self.env.get_at(env_hops, &var_info.name),
-            None => self.globals.get(&var_info.name),
+            VHops::Local(env_hops) => self.env.get_at(env_hops, &var_info.name),
+            VHops::Global => self.globals.get(&var_info.name),
         }
     }
 

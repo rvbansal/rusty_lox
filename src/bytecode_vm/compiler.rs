@@ -205,7 +205,7 @@ impl<'s> Compiler<'s> {
                 self.define_variable(name, line)?;
                 // Put class on stack
                 if let Some(superclass) = superclass {
-                    if superclass.name == *name {
+                    if superclass == name {
                         panic!("Superclass is same as subclass.");
                     }
 
@@ -213,7 +213,7 @@ impl<'s> Compiler<'s> {
                     self.declare_variable(SUPER_STR)?;
                     self.define_variable(SUPER_STR, line)?;
 
-                    self.get_variable(&superclass.name, line)?;
+                    self.get_variable(superclass, line)?;
                     self.get_variable(name, line)?;
                     self.emit_op(StructOpCode::Inherit, line);
                 } else {
@@ -259,8 +259,8 @@ impl<'s> Compiler<'s> {
             ExprType::Literal(l) => self.compile_literal(l, line),
             ExprType::Infix(op, lhs, rhs) => self.compile_infix(*op, lhs, rhs)?,
             ExprType::Prefix(op, expr) => self.compile_prefix(*op, expr)?,
-            ExprType::Variable(var) => self.get_variable(&var.name, line)?,
-            ExprType::Assignment(var, expr) => self.set_variable(&var.name, expr, line)?,
+            ExprType::Variable(var) => self.get_variable(var, line)?,
+            ExprType::Assignment(var, expr) => self.set_variable(var, expr, line)?,
             ExprType::Logical(op, lhs, rhs) => match op {
                 LogicalOperator::And => self.compile_and(lhs, rhs)?,
                 LogicalOperator::Or => self.compile_or(lhs, rhs)?,
@@ -277,10 +277,10 @@ impl<'s> Compiler<'s> {
                 self.compile_expression(value_expr)?;
                 self.emit_op(StructOpCode::SetProperty(index), line);
             }
-            ExprType::This(_) => {
+            ExprType::This => {
                 self.get_variable(THIS_STR, line)?;
             }
-            ExprType::Super(_, method_name) => {
+            ExprType::Super(method_name) => {
                 self.get_variable(THIS_STR, line)?;
                 self.get_variable(SUPER_STR, line)?;
 
@@ -502,7 +502,7 @@ impl<'s> Compiler<'s> {
 
                 self.emit_op(StructOpCode::Invoke(index, num_args), line);
             }
-            ExprType::Super(_, method_name) => {
+            ExprType::Super(method_name) => {
                 // Method on super of instance.
                 let line = callee.span.start_pos.line_no;
                 self.get_variable(THIS_STR, line)?;

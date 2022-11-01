@@ -48,10 +48,10 @@ impl LoxClassDataPtr {
         }
     }
 
-    pub fn execute(
+    pub fn execute<S: std::io::Write>(
         &self,
         args: Vec<Object>,
-        interpreter: &mut Interpreter,
+        interpreter: &mut Interpreter<S>,
     ) -> RuntimeResult<Object> {
         if self.arity() != args.len() {
             return Err(InterpreterError::WrongArity(self.arity(), args.len()));

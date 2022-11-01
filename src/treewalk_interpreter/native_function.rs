@@ -26,10 +26,10 @@ impl NativeFn {
         &self.0.name
     }
 
-    pub fn execute(
+    pub fn execute<S: std::io::Write>(
         &self,
         args: Vec<Object>,
-        _interpreter: &mut Interpreter,
+        _interpreter: &mut Interpreter<S>,
     ) -> RuntimeResult<Object> {
         if self.0.arity == args.len() {
             (self.0.func)(args)

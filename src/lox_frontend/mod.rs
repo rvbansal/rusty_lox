@@ -1,5 +1,6 @@
 pub mod constants;
 pub mod cursor;
+pub mod errors;
 pub mod grammar;
 pub mod lexer;
 pub mod parser;

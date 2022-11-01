@@ -1,6 +1,8 @@
-use super::constants::{MAX_FUNC_ARGS, SUPER_STR, THIS_STR};
+use super::constants::MAX_FUNC_ARGS;
+use super::errors::{ParserError, ParserResult};
 use super::grammar::PrefixOperator;
-use super::grammar::{Expr, ExprType, FuncInfo, Literal, Stmt, StmtType, VariableInfo};
+use super::grammar::Tree;
+use super::grammar::{Expr, ExprType, FuncInfo, Literal, Stmt, StmtType};
 use super::lexer::Lexer;
 use super::parser_utils::{ParserOperator, Precedence};
 use super::span::Span;
@@ -12,17 +14,6 @@ pub struct Parser<'s> {
     current: SpannedToken,
     previous: SpannedToken,
 }
-
-#[derive(Debug)]
-pub enum ParserError {
-    ExpectedToken(Token, Span, Token),
-    ExpectedExpr(Span, Token),
-    ExpectedIdentifier(Span),
-    TooManyArgs(Span),
-    ExpectedLValue(Span),
-}
-
-pub type ParserResult<T> = Result<T, ParserError>;
 
 impl<'s> Parser<'s> {
     pub fn new(source: &'s str) -> Self {
@@ -38,19 +29,24 @@ impl<'s> Parser<'s> {
             previous: dummy_token,
         };
 
-        parser.bump();
-        std::mem::drop(());
+        parser.bump().unwrap();
         parser
     }
 
     /// Advances the stream.
-    fn bump(&mut self) {
+    fn bump(&mut self) -> ParserResult<()> {
         std::mem::swap(&mut self.previous, &mut self.current);
         self.current = self.lexer.next_token();
+
+        if let Token::LexerError(e) = &self.current.token {
+            Err(ParserError::IllegalToken(self.current.span, e.clone()))
+        } else {
+            Ok(())
+        }
     }
 
     /// Checks whether or not the current token matches the given token.
-    fn check(&mut self, t: Token) -> bool {
+    fn check(&self, t: Token) -> bool {
         self.current.token == t
     }
 
@@ -58,7 +54,7 @@ impl<'s> Parser<'s> {
     /// If true consume it and return true, else return false.
     fn check_consume(&mut self, t: Token) -> bool {
         if self.check(t) {
-            self.bump();
+            self.bump().expect("Cannot match error tokens.");
             return true;
         }
         false
@@ -67,7 +63,7 @@ impl<'s> Parser<'s> {
     /// Checks whether or not the current token matches the given token.
     /// If true consume it, else return Error.
     fn consume(&mut self, t: Token) -> ParserResult<()> {
-        self.bump();
+        self.bump()?;
 
         if self.previous.token == t {
             Ok(())
@@ -81,15 +77,43 @@ impl<'s> Parser<'s> {
     }
 
     /// Parses program from the top of treating it as a set of statements.
-    pub fn parse(mut self) -> Vec<ParserResult<Stmt>> {
+    pub fn parse(mut self) -> Result<Tree, Vec<ParserError>> {
         let mut stmts = vec![];
+        let mut errors = vec![];
 
         while !self.check(Token::EndOfFile) {
-            let stmt = self.parse_spanned_declaration();
-            stmts.push(stmt);
+            let result = self.parse_spanned_declaration();
+            match result {
+                Ok(stmt) => stmts.push(stmt),
+                Err(e) => {
+                    errors.push(e);
+                    self.synchronize(&mut errors);
+                }
+            }
         }
 
-        stmts
+        if errors.is_empty() {
+            Ok(Tree { stmts })
+        } else {
+            Err(errors)
+        }
+    }
+
+    fn synchronize(&mut self, errors: &mut Vec<ParserError>) {
+        let mut sync_pt = false;
+
+        while !sync_pt {
+            let current_token = &self.current.token;
+
+            if matches!(current_token, Token::Semicolon | Token::EndOfFile) {
+                sync_pt = true;
+            }
+
+            match self.bump() {
+                Ok(_) => {}
+                Err(e) => errors.push(e),
+            }
+        }
     }
 
     /// Handle variable declations separately from non-declaring statements since
@@ -108,7 +132,7 @@ impl<'s> Parser<'s> {
     fn parse_nospan_declaration(&mut self) -> ParserResult<StmtType> {
         match self.current.token {
             Token::Var => {
-                self.bump();
+                self.bump()?;
                 let name = self.parse_identifier()?;
                 let expr = if self.check_consume(Token::Equals) {
                     self.parse_expression()?
@@ -156,7 +180,7 @@ impl<'s> Parser<'s> {
         let name = self.parse_identifier()?;
 
         let superclass = if self.check_consume(Token::LeftAngle) {
-            Some(VariableInfo::new(self.parse_identifier()?))
+            Some(self.parse_identifier()?)
         } else {
             None
         };
@@ -186,7 +210,7 @@ impl<'s> Parser<'s> {
     fn parse_nospan_statement(&mut self) -> ParserResult<StmtType> {
         match self.current.token {
             Token::Print => {
-                self.bump();
+                self.bump()?;
                 let expr = self.parse_expression()?;
                 self.consume(Token::Semicolon)?;
 
@@ -337,7 +361,7 @@ impl<'s> Parser<'s> {
         let mut lhs = match prefix_op {
             Some(op) => {
                 let curr_span = self.current.span;
-                self.bump();
+                self.bump()?;
                 let expr = self.run_pratt_parse_algo(Precedence::Unary)?;
                 to_expr(
                     ExprType::Prefix(op, Box::new(expr)),
@@ -353,7 +377,7 @@ impl<'s> Parser<'s> {
             }
 
             if op != ParserOperator::Call {
-                self.bump();
+                self.bump()?;
             }
 
             let precedence = op.precedence();
@@ -371,9 +395,7 @@ impl<'s> Parser<'s> {
                 ParserOperator::Assignment => {
                     let rhs_box = Box::new(self.run_pratt_parse_algo(precedence)?);
                     match lhs.expr {
-                        ExprType::Variable(var_info) => {
-                            ExprType::Assignment(VariableInfo::new(var_info.name), rhs_box)
-                        }
+                        ExprType::Variable(var) => ExprType::Assignment(var, rhs_box),
                         ExprType::Get(expr, property) => ExprType::Set(expr, property, rhs_box),
                         _ => return Err(ParserError::ExpectedLValue(lhs.span)),
                     }
@@ -396,7 +418,7 @@ impl<'s> Parser<'s> {
 
     /// Parse primary token.
     fn parse_primary(&mut self) -> ParserResult<Expr> {
-        self.bump();
+        self.bump()?;
         let curr_span = self.previous.span;
 
         let expr = match &self.previous.token {
@@ -405,13 +427,12 @@ impl<'s> Parser<'s> {
             Token::False => from_literal(Literal::Boolean(false)),
             Token::String(s) => from_literal(Literal::Str(s.to_owned())),
             Token::Nil => from_literal(Literal::Nil),
-            Token::Identifier(name) => ExprType::Variable(VariableInfo::new(name.to_owned())),
-            Token::This => ExprType::This(VariableInfo::new(THIS_STR.to_owned())),
+            Token::Identifier(name) => ExprType::Variable(name.to_owned()),
+            Token::This => ExprType::This,
             Token::Super => {
-                let var = VariableInfo::new(SUPER_STR.to_owned());
                 self.consume(Token::Dot)?;
                 let method_name = self.parse_identifier()?;
-                ExprType::Super(var, method_name)
+                ExprType::Super(method_name)
             }
             Token::LeftParen => {
                 let sub_expr = self.parse_expression()?;
@@ -425,7 +446,7 @@ impl<'s> Parser<'s> {
     }
 
     fn parse_identifier(&mut self) -> ParserResult<String> {
-        self.bump();
+        self.bump()?;
         match &self.previous.token {
             Token::Identifier(name) => Ok(name.to_owned()),
             _ => Err(ParserError::ExpectedIdentifier(self.previous.span)),
