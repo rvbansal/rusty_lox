@@ -1,6 +1,9 @@
+use std::convert::{TryFrom, TryInto};
+use std::rc::Rc;
+
 use crate::lox_frontend::grammar::{
-    Identifier, InfixOperator, LogicalOperator, PrefixOperator,
-    Expr, ExprType, FuncInfo, Literal, Stmt, StmtType
+    Expr, ExprType, FuncInfo, Identifier, InfixOperator, Literal, LogicalOperator, PrefixOperator,
+    Stmt, StmtType,
 };
 use crate::lox_frontend::span::Span;
 
@@ -11,9 +14,6 @@ use super::opcode::{
     MAX_UPVALUES,
 };
 use super::string_interner::StringInterner;
-
-use std::convert::{TryFrom, TryInto};
-use std::rc::Rc;
 
 pub const THIS_STR: &str = "this";
 pub const INIT_STR: &str = "init";

@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+use std::rc::Rc;
+
 use super::chunk::{Chunk, ChunkConstant};
 use super::errors::{VmError, VmResult};
 use super::gc::{Gc, HasSubHeap, Heap, Manages, SubHeap};
@@ -8,9 +11,6 @@ use super::string_interner::{StringIntern, StringInterner};
 use super::value::{
     LoxBoundMethod, LoxClass, LoxClosure, LoxInstance, PropertySearch, Upvalue, Value,
 };
-
-use std::collections::HashMap;
-use std::rc::Rc;
 
 const GC_RESET_RATIO: f64 = 2.0;
 const MAX_CALLFRAMES: usize = 64;

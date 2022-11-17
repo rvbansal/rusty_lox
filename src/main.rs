@@ -1,8 +1,3 @@
-use crate::lox_frontend::Parser;
-
-use crate::bytecode_vm::{Compiler, VM};
-use crate::treewalk_interpreter::{Interpreter, Resolver};
-
 use clap::{Parser as ClapParser, Subcommand};
 use std::io::{Stdout, Write};
 use std::{fs, io};
@@ -10,6 +5,10 @@ use std::{fs, io};
 mod bytecode_vm;
 mod lox_frontend;
 mod treewalk_interpreter;
+
+use crate::bytecode_vm::{Compiler, VM};
+use crate::lox_frontend::Parser;
+use crate::treewalk_interpreter::{Interpreter, Resolver};
 
 #[derive(ClapParser)]
 #[clap(author, version, about, long_about = None)]

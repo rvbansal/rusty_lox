@@ -1,12 +1,12 @@
+use std::fmt;
+use std::rc::Rc;
+
 use super::environment::Environment;
 use super::errors::{InterpreterError, RuntimeResult};
 use super::grammar::FuncInfo;
 use super::interpreter::Interpreter;
 use super::object::Object;
 use crate::lox_frontend::constants::THIS_STR;
-
-use std::fmt;
-use std::rc::Rc;
 
 pub struct LoxFnData {
     fn_data: FuncInfo,

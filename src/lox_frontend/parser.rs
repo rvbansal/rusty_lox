@@ -30,7 +30,6 @@ impl<'s> Parser<'s> {
         }
     }
 
-    /// Advances the stream.
     fn bump(&mut self) -> ParserResult<()> {
         std::mem::swap(&mut self.previous, &mut self.current);
         self.current = self.lexer.next_token();
@@ -45,13 +44,10 @@ impl<'s> Parser<'s> {
         }
     }
 
-    /// Checks whether or not the current token matches the given token.
     fn check(&self, t: Token) -> bool {
         self.current.token == t
     }
 
-    /// Checks whether or not the current token matches the given token.
-    /// If true consume it and return true, else return false.
     fn check_consume(&mut self, t: Token) -> bool {
         if self.check(t) {
             self.bump().expect("Cannot match error tokens.");
@@ -78,7 +74,6 @@ impl<'s> Parser<'s> {
         }
     }
 
-    /// Parses program from the top of treating it as a set of statements.
     pub fn parse(mut self) -> Result<Tree, Vec<ParserError>> {
         if let Err(e) = self.bump() {
             self.emit_error(e);
@@ -118,8 +113,6 @@ impl<'s> Parser<'s> {
         self.errors.push(error);
     }
 
-    /// Handle variable declations separately from non-declaring statements since
-    /// they may not be allowed everywhere non-declaring statements are allowed.
     fn parse_declaration_with_recovery(&mut self) -> Option<Stmt> {
         match self.parse_declaration() {
             Ok(stmt) => Some(stmt),
@@ -152,7 +145,6 @@ impl<'s> Parser<'s> {
         })
     }
 
-    /// Parse func info into func info struct.
     fn parse_func_info(&mut self) -> ParserResult<FuncInfo> {
         let curr_span = self.current.span;
 
@@ -171,7 +163,6 @@ impl<'s> Parser<'s> {
         Ok(func_info)
     }
 
-    /// Parse class declaration.
     fn parse_class_decl(&mut self) -> ParserResult<StmtType> {
         self.expect(Token::Class);
         let name = self.parse_identifier(ParserErrorType::ExpectedIdentifier)?;
@@ -289,7 +280,6 @@ impl<'s> Parser<'s> {
         Ok(StmtType::While(condition, Box::new(body)))
     }
 
-    /// Parse for loop.
     fn parse_for(&mut self) -> ParserResult<StmtType> {
         self.expect(Token::For);
 
@@ -345,7 +335,6 @@ impl<'s> Parser<'s> {
         Ok(StmtType::For(init_stmt, condition, increment, body))
     }
 
-    /// Parse return statement.
     fn parse_return(&mut self) -> ParserResult<StmtType> {
         self.expect(Token::Return);
         let expr = if !self.check(Token::Semicolon) {
@@ -380,12 +369,10 @@ impl<'s> Parser<'s> {
         }
     }
 
-    /// Parse expression with precedence.
     pub fn parse_expression(&mut self) -> ParserResult<Expr> {
         self.run_pratt_parse_algo(Precedence::Lowest)
     }
 
-    /// Pratt parsing algo.
     pub fn run_pratt_parse_algo(&mut self, min_precedence: Precedence) -> ParserResult<Expr> {
         let prefix_op = match &self.current.token {
             Token::Bang => Some(PrefixOperator::LogicalNot),
@@ -458,7 +445,6 @@ impl<'s> Parser<'s> {
         Ok(lhs)
     }
 
-    /// Parse primary token.
     fn parse_primary(&mut self) -> ParserResult<Expr> {
         self.bump()?;
         let curr_span = self.previous.span;
@@ -527,7 +513,6 @@ impl<'s> Parser<'s> {
         Ok(args)
     }
 
-    /// Parse function args.
     fn parse_func_args(&mut self) -> ParserResult<Vec<Expr>> {
         self.expect(Token::LeftParen);
         let args = self.parse_comma_sep(Self::parse_expression)?;

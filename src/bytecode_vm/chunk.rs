@@ -1,10 +1,10 @@
+use std::fmt;
+use std::rc::Rc;
+
 use super::errors::{CompilerError, CompilerResult};
 use super::opcode::{ConstantIndex, OpCodeError, StructOpCode, UpvalueLocation};
 use super::string_interner::StringIntern;
 use std::convert::TryInto;
-
-use std::fmt;
-use std::rc::Rc;
 
 #[derive(Clone)]
 pub enum ChunkConstant {

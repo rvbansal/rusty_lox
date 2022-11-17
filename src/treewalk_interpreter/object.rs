@@ -1,9 +1,10 @@
+use crate::lox_frontend::grammar::{InfixOperator, PrefixOperator};
+
 use super::class::{LoxClassDataPtr, LoxInstanceDataPtr};
 use super::errors::{InterpreterError, RuntimeResult};
 use super::function::LoxFn;
 use super::interpreter::Interpreter;
 use super::native_function::NativeFn;
-use crate::lox_frontend::grammar::{InfixOperator, PrefixOperator};
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum Object {

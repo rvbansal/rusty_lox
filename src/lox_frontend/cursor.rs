@@ -1,6 +1,7 @@
-use super::span::CodePosition;
 use std::iter::Peekable;
 use std::str::CharIndices;
+
+use super::span::CodePosition;
 
 #[derive(Debug, Clone)]
 pub struct Cursor<'src> {

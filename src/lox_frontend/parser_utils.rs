@@ -23,7 +23,8 @@ pub enum Precedence {
     Multiplication,
     Unary,
     Property,
-    Call, // Highest precedence
+    Call,
+    // Highest precedence
 }
 
 #[derive(Debug, Clone, Copy)]

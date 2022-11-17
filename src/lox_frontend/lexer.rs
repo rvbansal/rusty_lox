@@ -19,7 +19,6 @@ impl<'src> Lexer<'src> {
     /// Returns the next token.
     pub fn next_token(&mut self) -> SpannedToken {
         loop {
-            // Get rid of whitespace.
             self.cursor.take_while(|ch| ch.is_ascii_whitespace());
 
             let start_pos = self.cursor.get_position();
@@ -35,6 +34,7 @@ impl<'src> Lexer<'src> {
         }
     }
 
+    /// Lexes the token.
     fn lex_token(&mut self) -> Option<Token> {
         let (byte_idx, ch) = match self.cursor.take() {
             Some(t) => t,

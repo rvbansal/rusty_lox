@@ -1,8 +1,9 @@
+use std::fmt;
+use std::rc::Rc;
+
 use super::errors::{InterpreterError, RuntimeResult};
 use super::interpreter::Interpreter;
 use super::object::Object;
-use std::fmt;
-use std::rc::Rc;
 
 type FnType = fn(Vec<Object>) -> RuntimeResult<Object>;
 

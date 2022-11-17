@@ -1,13 +1,13 @@
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::fmt;
+use std::rc::Rc;
+
 use super::errors::{InterpreterError, RuntimeResult};
 use super::function::LoxFn;
 use super::interpreter::Interpreter;
 use super::object::Object;
 use crate::lox_frontend::constants::INIT_STR;
-
-use std::cell::RefCell;
-use std::collections::HashMap;
-use std::fmt;
-use std::rc::Rc;
 
 struct LoxClassData {
     name: String,

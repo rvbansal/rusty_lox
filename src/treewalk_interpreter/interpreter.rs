@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use super::class::LoxClassDataPtr;
 use super::environment::Environment;
 use super::errors::{InterpreterError, RuntimeResult};
@@ -9,8 +11,6 @@ use super::grammar::{
 use super::native_function::get_native_funcs;
 use super::object::Object;
 use crate::lox_frontend::constants::{INIT_STR, SUPER_STR, THIS_STR};
-
-use std::collections::HashMap;
 
 pub struct Interpreter<S> {
     pub env: Environment,

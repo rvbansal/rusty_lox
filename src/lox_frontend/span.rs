@@ -1,6 +1,5 @@
 use std::fmt;
 
-/// Tracks position in source code for error messages.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 pub struct CodePosition {
     pub byte_pos: usize,
@@ -8,7 +7,6 @@ pub struct CodePosition {
     pub column_no: usize,
 }
 
-/// Represents span of full statement/expression.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct Span {
     pub start_pos: CodePosition,

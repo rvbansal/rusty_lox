@@ -1,10 +1,10 @@
+use std::collections::HashMap;
+use std::rc::Rc;
+
 use super::chunk::Chunk;
 use super::gc::Gc;
 use super::native_function::NativeFn;
 use super::string_interner::StringIntern;
-
-use std::collections::HashMap;
-use std::rc::Rc;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
